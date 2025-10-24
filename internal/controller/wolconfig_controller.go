@@ -43,10 +43,12 @@ const (
 	ReasonInvalidConfig = "InvalidConfig"
 	// ReasonMappingUpdated indicates mapping was successfully updated
 	ReasonMappingUpdated = "MappingUpdated"
+	// ReasonAgentFailed indicates agent DaemonSet reconciliation failed
+	ReasonAgentFailed = "AgentFailed"
 )
 
-// ConfigReconciler reconciles a WOLConfig object
-type ConfigReconciler struct {
+// WolConfigReconciler reconciles a WolConfig object
+type WolConfigReconciler struct {
 	client.Client
 	Scheme    *runtime.Scheme
 	Mapper    *wol.MACMapper
@@ -54,39 +56,48 @@ type ConfigReconciler struct {
 	VMStarter *wol.VMStarter
 }
 
-// +kubebuilder:rbac:groups=wol.pillon.org,resources=configs,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=wol.pillon.org,resources=configs/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=wol.pillon.org,resources=configs/finalizers,verbs=update
+// +kubebuilder:rbac:groups=wol.pillon.org,resources=wolconfigs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=wol.pillon.org,resources=wolconfigs/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=wol.pillon.org,resources=wolconfigs/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachines,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=subresources.kubevirt.io,resources=virtualmachines/start,verbs=update
+// +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=daemonsets/status,verbs=get
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
-// Reconcile handles WOLConfig reconciliation
-func (r *ConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+// Reconcile handles WolConfig reconciliation
+func (r *WolConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 
-	// Fetch the WOLConfig instance
-	config := &wolv1beta1.Config{}
+	// Fetch the WolConfig instance
+	config := &wolv1beta1.WolConfig{}
 	if err := r.Get(ctx, req.NamespacedName, config); err != nil {
 		if errors.IsNotFound(err) {
 			// Config deleted, nothing to do
-			log.Info("WOLConfig deleted")
+			log.Info("WolConfig deleted")
 			return ctrl.Result{}, nil
 		}
-		log.Error(err, "Failed to get WOLConfig")
+		log.Error(err, "Failed to get WolConfig")
 		return ctrl.Result{}, err
 	}
 
-	log.Info("Reconciling WOLConfig",
+	log.Info("Reconciling WolConfig",
 		"name", config.Name,
 		"discoveryMode", config.Spec.DiscoveryMode,
-		"wolPort", config.Spec.WOLPort)
+		"wolPorts", config.Spec.WOLPorts)
 
 	// Validate configuration
 	if err := r.validateConfig(config); err != nil {
 		log.Error(err, "Invalid configuration")
 		r.updateStatus(ctx, config, false, ReasonInvalidConfig, err.Error())
 		return ctrl.Result{}, err
+	}
+
+	// Reconcile agent DaemonSet
+	if err := r.reconcileAgentDaemonSet(ctx, config); err != nil {
+		log.Error(err, "Failed to reconcile agent DaemonSet")
+		r.updateStatus(ctx, config, false, ReasonAgentFailed, fmt.Sprintf("Failed to reconcile DaemonSet: %v", err))
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, err
 	}
 
 	// Refresh global mapping from ALL WOLConfigs (not just this one)
@@ -103,12 +114,18 @@ func (r *ConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	config.Status.ManagedVMs = managedVMs
 	config.Status.LastSync = &now
 
+	// Update agent status from DaemonSet
+	if err := r.updateAgentStatus(ctx, config); err != nil {
+		log.Error(err, "Failed to update agent status")
+		// Non fatal, continua
+	}
+
 	if err := r.updateStatus(ctx, config, true, ReasonMappingUpdated, "VM mapping refreshed successfully"); err != nil {
 		log.Error(err, "Failed to update status")
 		return ctrl.Result{}, err
 	}
 
-	log.Info("Successfully reconciled WOLConfig",
+	log.Info("Successfully reconciled WolConfig",
 		"managedVMs", config.Status.ManagedVMs,
 		"lastSync", config.Status.LastSync)
 
@@ -121,19 +138,21 @@ func (r *ConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
-// validateConfig validates the WOLConfig specification
-func (r *ConfigReconciler) validateConfig(config *wolv1beta1.Config) error {
+// validateConfig validates the WolConfig specification
+func (r *WolConfigReconciler) validateConfig(config *wolv1beta1.WolConfig) error {
 	// Validate discovery mode
 	if config.Spec.DiscoveryMode == "" {
 		config.Spec.DiscoveryMode = wolv1beta1.DiscoveryModeAll
 	}
 
-	// Validate WOL port
-	if config.Spec.WOLPort == 0 {
-		config.Spec.WOLPort = 9
+	// Validate WOL ports
+	if len(config.Spec.WOLPorts) == 0 {
+		config.Spec.WOLPorts = []int{9} // Default
 	}
-	if config.Spec.WOLPort < 1 || config.Spec.WOLPort > 65535 {
-		return fmt.Errorf("invalid WOL port: %d (must be 1-65535)", config.Spec.WOLPort)
+	for _, port := range config.Spec.WOLPorts {
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("invalid WOL port: %d (must be 1-65535)", port)
+		}
 	}
 
 	// Validate cache TTL
@@ -159,8 +178,8 @@ func (r *ConfigReconciler) validateConfig(config *wolv1beta1.Config) error {
 	return nil
 }
 
-// updateStatus updates the WOLConfig status
-func (r *ConfigReconciler) updateStatus(ctx context.Context, config *wolv1beta1.Config, ready bool, reason, message string) error {
+// updateStatus updates the WolConfig status
+func (r *WolConfigReconciler) updateStatus(ctx context.Context, config *wolv1beta1.WolConfig, ready bool, reason, message string) error {
 	status := metav1.ConditionTrue
 	if !ready {
 		status = metav1.ConditionFalse
@@ -193,10 +212,10 @@ func (r *ConfigReconciler) updateStatus(ctx context.Context, config *wolv1beta1.
 }
 
 // SetupWithManager sets up the controller with the Manager
-func (r *ConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Watch for changes to WOLConfig
+func (r *WolConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Watch for changes to WolConfig
 	builder := ctrl.NewControllerManagedBy(mgr).
-		For(&wolv1beta1.Config{})
+		For(&wolv1beta1.WolConfig{})
 
 	// Watch VirtualMachines to trigger reconciliation when VMs change
 	builder = builder.Watches(
@@ -207,12 +226,12 @@ func (r *ConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return builder.Complete(r)
 }
 
-// mapVMToConfig maps VirtualMachine changes to WOLConfig reconciliation requests
-func (r *ConfigReconciler) mapVMToConfig(ctx context.Context, obj client.Object) []ctrl.Request {
-	// List all WOLConfigs (should typically be just one)
-	configList := &wolv1beta1.ConfigList{}
+// mapVMToConfig maps VirtualMachine changes to WolConfig reconciliation requests
+func (r *WolConfigReconciler) mapVMToConfig(ctx context.Context, obj client.Object) []ctrl.Request {
+	// List all WolConfigs (should typically be just one)
+	configList := &wolv1beta1.WolConfigList{}
 	if err := r.List(ctx, configList); err != nil {
-		log.FromContext(ctx).Error(err, "Failed to list WOLConfigs")
+		log.FromContext(ctx).Error(err, "Failed to list WolConfigs")
 		return []ctrl.Request{}
 	}
 
@@ -229,19 +248,19 @@ func (r *ConfigReconciler) mapVMToConfig(ctx context.Context, obj client.Object)
 	return requests
 }
 
-// refreshAllConfigs refreshes VM mappings from ALL WOLConfigs and merges them
+// refreshAllConfigs refreshes VM mappings from ALL WolConfigs and merges them
 // This allows multiple configs to work in OR mode
-func (r *ConfigReconciler) refreshAllConfigs(ctx context.Context) (int, error) {
-	// List all WOLConfigs
-	configList := &wolv1beta1.ConfigList{}
+func (r *WolConfigReconciler) refreshAllConfigs(ctx context.Context) (int, error) {
+	// List all WolConfigs
+	configList := &wolv1beta1.WolConfigList{}
 	if err := r.List(ctx, configList); err != nil {
-		return 0, fmt.Errorf("failed to list WOLConfigs: %w", err)
+		return 0, fmt.Errorf("failed to list WolConfigs: %w", err)
 	}
 
-	// Create a synthetic merged config that combines all WOLConfigs
+	// Create a synthetic merged config that combines all WolConfigs
 	// This implements OR logic: union of all configs
-	mergedConfig := &wolv1beta1.Config{
-		Spec: wolv1beta1.ConfigSpec{
+	mergedConfig := &wolv1beta1.WolConfig{
+		Spec: wolv1beta1.WolConfigSpec{
 			DiscoveryMode: wolv1beta1.DiscoveryModeAll,
 		},
 	}

@@ -19,12 +19,15 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
+	"net"
 	"os"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"google.golang.org/grpc"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -37,6 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	wolv1beta1 "github.com/gpillon/kubevirt-wol/api/v1beta1"
+	wolv1 "github.com/gpillon/kubevirt-wol/api/wol/v1"
 	"github.com/gpillon/kubevirt-wol/internal/controller"
 	"github.com/gpillon/kubevirt-wol/internal/wol"
 	// +kubebuilder:scaffold:imports
@@ -73,7 +77,7 @@ func main() {
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	opts := zap.Options{
-		Development: true,
+		Development: false,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -148,7 +152,7 @@ func main() {
 	}
 
 	// Initialize WOL components
-	setupLog.Info("initializing WOL components")
+	setupLog.Info("initializing WOL components (aggregator mode with gRPC)")
 
 	// Create MAC mapper
 	mapper := wol.NewMACMapper(mgr.GetClient(), ctrl.Log.WithName("mapper"))
@@ -156,18 +160,18 @@ func main() {
 	// Create VM starter
 	vmStarter := wol.NewVMStarter(mgr.GetClient(), ctrl.Log.WithName("vmstarter"))
 
-	// Create WOL listener (port will be set from config, default to 9)
-	listener := wol.NewListener(9, mapper, vmStarter, ctrl.Log.WithName("listener"))
+	// Create WOL aggregator (gRPC server)
+	aggregator := wol.NewAggregator(mapper, vmStarter, ctrl.Log.WithName("aggregator"))
 
-	// Setup controller with WOL components
-	if err = (&controller.ConfigReconciler{
+	// Setup controller with WOL components (no Listener needed, using Aggregator)
+	if err = (&controller.WolConfigReconciler{
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
 		Mapper:    mapper,
-		Listener:  listener,
+		Listener:  nil, // No longer using direct UDP listener
 		VMStarter: vmStarter,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Config")
+		setupLog.Error(err, "unable to create controller", "controller", "WolConfig")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
@@ -181,16 +185,46 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Start WOL listener in background
+	// Setup context for graceful shutdown
 	ctx := ctrl.SetupSignalHandler()
+
+	// Start aggregator cleanup routine
+	go aggregator.StartCleanup(ctx)
+
+	// Start gRPC server for receiving WOL events from agents
+	grpcPort := 9090
+	grpcServer := grpc.NewServer(
+		grpc.MaxRecvMsgSize(1024*1024),
+		grpc.MaxSendMsgSize(1024*1024),
+	)
+	wolv1.RegisterWOLServiceServer(grpcServer, aggregator)
+
 	go func() {
-		setupLog.Info("starting WOL listener")
-		if err := listener.Start(ctx); err != nil {
-			setupLog.Error(err, "WOL listener error")
+		lis, err := net.Listen("tcp", fmt.Sprintf(":%d", grpcPort))
+		if err != nil {
+			setupLog.Error(err, "Failed to listen for gRPC", "port", grpcPort)
+			os.Exit(1)
+		}
+
+		setupLog.Info("Starting gRPC server for WOL events", "port", grpcPort)
+
+		if err := grpcServer.Serve(lis); err != nil {
+			setupLog.Error(err, "gRPC server failed")
+			os.Exit(1)
 		}
 	}()
 
-	setupLog.Info("starting manager")
+	// Graceful shutdown for gRPC server
+	go func() {
+		<-ctx.Done()
+		setupLog.Info("Shutting down gRPC server...")
+		grpcServer.GracefulStop()
+	}()
+
+	setupLog.Info("starting manager",
+		"grpcPort", grpcPort,
+		"architecture", "distributed (manager + daemonset agents)")
+
 	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)

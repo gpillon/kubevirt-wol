@@ -102,6 +102,17 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
 
+.PHONY: proto
+proto: ## Generate protobuf code from .proto files.
+	@which protoc > /dev/null || (echo "ERROR: protoc not found. Install it first." && exit 1)
+	@which protoc-gen-go > /dev/null || (echo "Installing protoc-gen-go..." && go install google.golang.org/protobuf/cmd/protoc-gen-go@latest)
+	@which protoc-gen-go-grpc > /dev/null || (echo "Installing protoc-gen-go-grpc..." && go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest)
+	PATH=$(PATH):$(shell go env GOPATH)/bin protoc \
+		--go_out=. --go_opt=paths=source_relative \
+		--go-grpc_out=. --go-grpc_opt=paths=source_relative \
+		api/wol/v1/wol.proto
+	@echo "Protobuf code generated successfully"
+
 .PHONY: fmt
 fmt: ## Run go fmt against code.
 	go fmt ./...
@@ -130,23 +141,61 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 ##@ Build
 
 .PHONY: build
-build: manifests generate fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/main.go
+build: build-manager build-agent ## Build all binaries.
+
+.PHONY: build-manager
+build-manager: manifests generate fmt vet ## Build manager binary.
+	go build -o bin/manager cmd/manager/main.go
+
+.PHONY: build-agent
+build-agent: manifests generate fmt vet ## Build agent binary.
+	go build -o bin/agent cmd/agent/main.go
 
 .PHONY: run
-run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/main.go
+run: manifests generate fmt vet ## Run the manager from your host.
+	go run ./cmd/manager/main.go
+
+.PHONY: run-agent
+run-agent: ## Run the agent from your host (requires NODE_NAME env var).
+	@if [ -z "$$NODE_NAME" ]; then \
+		echo "ERROR: NODE_NAME environment variable must be set"; \
+		echo "Example: NODE_NAME=localhost make run-agent"; \
+		exit 1; \
+	fi
+	go run ./cmd/agent/main.go --node-name=$$NODE_NAME --operator-address=localhost:9090
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
-docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} .
+docker-build: docker-build-manager ## Build docker image with the manager.
+
+.PHONY: docker-build-manager
+docker-build-manager: ## Build docker image for manager.
+	$(CONTAINER_TOOL) build --build-arg BINARY=manager -t ${IMG} .
+
+.PHONY: docker-build-agent
+docker-build-agent: ## Build docker image for agent.
+	$(eval AGENT_IMG ?= $(shell echo ${IMG} | sed 's/manager/agent/g' | sed 's/:/-agent:/g'))
+	$(CONTAINER_TOOL) build --build-arg BINARY=agent -t ${AGENT_IMG} .
+
+.PHONY: docker-build-all
+docker-build-all: docker-build-manager docker-build-agent ## Build both manager and agent images.
 
 .PHONY: docker-push
-docker-push: ## Push docker image with the manager.
+docker-push: docker-push-manager ## Push docker image with the manager.
+
+.PHONY: docker-push-manager
+docker-push-manager: ## Push manager docker image.
 	$(CONTAINER_TOOL) push ${IMG}
+
+.PHONY: docker-push-agent
+docker-push-agent: ## Push agent docker image.
+	$(eval AGENT_IMG ?= $(shell echo ${IMG} | sed 's/manager/agent/g' | sed 's/:/-agent:/g'))
+	$(CONTAINER_TOOL) push ${AGENT_IMG}
+
+.PHONY: docker-push-all
+docker-push-all: docker-push-manager docker-push-agent ## Push both manager and agent images.
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
@@ -189,6 +238,15 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
+
+.PHONY: deploy-agent
+deploy-agent: kustomize ## Deploy agent DaemonSet to the K8s cluster.
+	$(eval AGENT_IMG ?= $(shell echo ${IMG} | sed 's/manager/agent/g' | sed 's/:/-agent:/g'))
+	cd config/agent && $(KUSTOMIZE) edit set image agent=${AGENT_IMG}
+	$(KUSTOMIZE) build config/agent | $(KUBECTL) apply -f -
+
+.PHONY: deploy-all
+deploy-all: deploy deploy-agent ## Deploy both manager and agent to the cluster.
 
 .PHONY: deploy-openshift
 deploy-openshift: manifests kustomize ## Deploy controller to OpenShift cluster with custom SCC.

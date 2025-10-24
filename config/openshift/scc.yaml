@@ -75,4 +75,7 @@ subjects:
   - kind: ServiceAccount
     name: kubevirt-wol-controller-manager
     namespace: kubevirt-wol-system
+  - kind: ServiceAccount
+    name: wol-agent
+    namespace: kubevirt-wol-system
 

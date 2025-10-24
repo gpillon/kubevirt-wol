@@ -26,7 +26,7 @@ The KubeVirt WOL Operator bridges traditional Wake-on-LAN functionality with mod
 - kubectl version v1.11.3+
 - Access to a Kubernetes v1.11.3+ cluster with KubeVirt installed
 - Host network access for the operator pod (to receive broadcast UDP packets)
-- **For OpenShift**: Cluster admin privileges to create custom SCC (see [OPENSHIFT.md](OPENSHIFT.md))
+- **For OpenShift**: Cluster admin privileges to create custom SCC (see [OpenShift Guide](docs/openshift.md))
 
 ### To Deploy on the cluster
 **Build and push your image to the location specified by `IMG`:**
@@ -70,7 +70,7 @@ After deploying the operator, create a WOLConfig resource to enable Wake-on-LAN:
 **Example 1: Monitor all VMs in specific namespaces**
 ```yaml
 apiVersion: wol.pillon.org/v1beta1
-kind: Config
+kind: WolConfig
 metadata:
   name: wol-config
 spec:
@@ -78,14 +78,14 @@ spec:
   namespaceSelectors:
     - default
     - production
-  wolPort: 9
+  wolPorts: [9]
   cacheTTL: 300
 ```
 
 **Example 2: Only manage VMs with specific labels**
 ```yaml
 apiVersion: wol.pillon.org/v1beta1
-kind: Config
+kind: WolConfig
 metadata:
   name: wol-config
 spec:
@@ -93,13 +93,13 @@ spec:
   vmSelector:
     matchLabels:
       wol.pillon.org/enabled: "true"
-  wolPort: 9
+  wolPorts: [9]
 ```
 
 **Example 3: Explicit MAC-to-VM mappings**
 ```yaml
 apiVersion: wol.pillon.org/v1beta1
-kind: Config
+kind: WolConfig
 metadata:
   name: wol-config
 spec:
@@ -108,7 +108,7 @@ spec:
     - macAddress: "52:54:00:12:34:56"
       vmName: my-vm
       namespace: default
-  wolPort: 9
+  wolPorts: [9]
 ```
 
 **Testing Wake-on-LAN**
@@ -176,8 +176,23 @@ Users can just run kubectl apply -f <URL for YAML BUNDLE> to install the project
 kubectl apply -f https://raw.githubusercontent.com/<org>/kubevirt-wol/<tag or branch>/dist/install.yaml
 ```
 
+## Documentation
+
+Comprehensive documentation is available in the [`docs/`](docs/) directory:
+
+- [**Architecture**](docs/ARCHITECTURE.md) - System architecture and design
+- [**Quick Start**](docs/QUICKSTART.md) - Fast deployment guide
+- [**Testing**](docs/TESTING.md) - Testing procedures and examples
+- [**OpenShift**](docs/openshift.md) - OpenShift-specific deployment guide
+- [**Quick Reference**](docs/QUICK-REFERENCE.md) - Common commands and configurations
+
 ## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
+
+Contributions are welcome! Please ensure:
+- All documentation goes in the `docs/` directory (except this README)
+- Use generic examples (no specific user configurations)
+- Run `make manifests generate` after API changes
+- All tests pass with `make test`
 
 **NOTE:** Run `make help` for more information on all potential `make` targets
 

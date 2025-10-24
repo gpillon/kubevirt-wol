@@ -46,7 +46,7 @@ type MACMapper struct {
 	mapping  map[string]VMInfo // MAC address (lowercase) -> VM info
 	lastSync time.Time
 	cacheTTL time.Duration
-	config   *wolv1beta1.Config
+	config   *wolv1beta1.WolConfig
 }
 
 // NewMACMapper creates a new MAC to VM mapper
@@ -60,7 +60,7 @@ func NewMACMapper(client client.Client, log logr.Logger) *MACMapper {
 }
 
 // UpdateConfig updates the mapper configuration
-func (m *MACMapper) UpdateConfig(config *wolv1beta1.Config) {
+func (m *MACMapper) UpdateConfig(config *wolv1beta1.WolConfig) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -121,7 +121,7 @@ func (m *MACMapper) RefreshMapping(ctx context.Context) error {
 }
 
 // discoverAllVMs discovers all VMs in selected namespaces
-func (m *MACMapper) discoverAllVMs(ctx context.Context, config *wolv1beta1.Config, mapping map[string]VMInfo) error {
+func (m *MACMapper) discoverAllVMs(ctx context.Context, config *wolv1beta1.WolConfig, mapping map[string]VMInfo) error {
 	namespaces := config.Spec.NamespaceSelectors
 	if len(namespaces) == 0 {
 		// If no namespaces specified, list all VMs across all namespaces
@@ -145,7 +145,7 @@ func (m *MACMapper) discoverAllVMs(ctx context.Context, config *wolv1beta1.Confi
 }
 
 // discoverVMsWithSelector discovers VMs matching the label selector
-func (m *MACMapper) discoverVMsWithSelector(ctx context.Context, config *wolv1beta1.Config, mapping map[string]VMInfo) error {
+func (m *MACMapper) discoverVMsWithSelector(ctx context.Context, config *wolv1beta1.WolConfig, mapping map[string]VMInfo) error {
 	if config.Spec.VMSelector == nil {
 		return fmt.Errorf("VMSelector is nil in LabelSelector mode")
 	}

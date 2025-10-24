@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+package wol.v1;
+
+option go_package = "github.com/gpillon/kubevirt-wol/api/wol/v1;wolv1";
+
+import "google/protobuf/timestamp.proto";
+
+// WOLService riceve eventi WOL dagli agent distribuiti
+service WOLService {
+  // ReportWOLEvent invia un evento WOL all'operator centrale
+  rpc ReportWOLEvent(WOLEvent) returns (WOLEventResponse);
+  
+  // ReportWOLEventStream supporta streaming per multiple events (opzionale per future)
+  rpc ReportWOLEventStream(stream WOLEvent) returns (stream WOLEventResponse);
+  
+  // HealthCheck per verificare che il server gRPC sia attivo
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// WOLEvent rappresenta un pacchetto WOL ricevuto da un agent
+message WOLEvent {
+  // MAC address del target in formato xx:xx:xx:xx:xx:xx
+  string mac_address = 1;
+  
+  // Timestamp di ricezione del pacchetto
+  google.protobuf.Timestamp timestamp = 2;
+  
+  // Nome del nodo Kubernetes che ha ricevuto il pacchetto
+  string node_name = 3;
+  
+  // IP sorgente del pacchetto WOL
+  string source_ip = 4;
+  
+  // Porta sorgente del pacchetto
+  uint32 source_port = 5;
+  
+  // Dimensione del pacchetto ricevuto
+  uint32 packet_size = 6;
+}
+
+// WOLEventResponse conferma la ricezione e il processing dell'evento
+message WOLEventResponse {
+  // Status di processamento
+  ResponseStatus status = 1;
+  
+  // Messaggio descrittivo
+  string message = 2;
+  
+  // Se trovata, info sulla VM target
+  VMInfo vm_info = 3;
+  
+  // Se l'evento era un duplicato (deduplica globale)
+  bool was_duplicate = 4;
+  
+  // Tempo impiegato per processare la richiesta (millisecondi)
+  int64 processing_time_ms = 5;
+}
+
+// ResponseStatus indica il risultato del processing
+enum ResponseStatus {
+  UNKNOWN = 0;
+  ACCEPTED = 1;                // Evento accettato e in processing
+  DUPLICATE = 2;               // Evento duplicato (già processato recentemente)
+  VM_NOT_FOUND = 3;           // Nessuna VM configurata per questo MAC
+  VM_START_INITIATED = 4;     // Start della VM iniziato con successo
+  VM_ALREADY_RUNNING = 5;     // VM già in esecuzione
+  ERROR = 6;                   // Errore durante il processing
+}
+
+// VMInfo contiene informazioni sulla VM target
+message VMInfo {
+  string name = 1;
+  string namespace = 2;
+  string current_state = 3;
+}
+
+// HealthCheckRequest per verificare stato server
+message HealthCheckRequest {
+  string service = 1;
+}
+
+// HealthCheckResponse risposta health check
+message HealthCheckResponse {
+  enum ServingStatus {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+  }
+  ServingStatus status = 1;
+}
+

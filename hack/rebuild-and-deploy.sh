@@ -7,7 +7,7 @@ echo "=========================================="
 echo ""
 
 # Set image
-IMG=${IMG:-quay.io/rh-ee-gpillon/kubevirt-wol:$(date +%Y%m%d-%H%M%S)}
+IMG=${IMG:-<your-registry>/kubevirt-wol:$(date +%Y%m%d-%H%M%S)}
 echo "Building image: $IMG"
 echo ""
 
@@ -39,5 +39,5 @@ echo "Check logs:"
 echo "  oc logs -n kubevirt-wol-system -l control-plane=controller-manager -f"
 echo ""
 echo "Test WOL:"
-echo "  ./test-wol.sh 02:f1:ef:00:00:0b"
+echo "  ./hack/test-wol.sh <mac-address> <node-ip>"
 

@@ -1,0 +1,31 @@
+# Example with LabelSelector mode and multiple ports
+apiVersion: wol.pillon.org/v1beta1
+kind: WolConfig
+metadata:
+  name: labelselector-example
+spec:
+  discoveryMode: LabelSelector
+  
+  # Only manage VMs with this label
+  vmSelector:
+    matchLabels:
+      wol.pillon.org/enabled: "true"
+  
+  namespaceSelectors:
+    - production
+  
+  # Multiple WOL ports
+  wolPorts: [9, 7]
+  cacheTTL: 300
+  
+  # Agent on worker nodes only
+  agent:
+    nodeSelector:
+      node-role.kubernetes.io/worker: ""
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "64Mi"
+      limits:
+        cpu: "100m"
+        memory: "128Mi"

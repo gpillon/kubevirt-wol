@@ -23,7 +23,7 @@ echo ""
 
 # Step 3: Deploy with privileged configuration
 echo "[3/3] Deploying privileged operator..."
-IMG=${IMG:-quay.io/rh-ee-gpillon/kubevirt-wol:latest}
+IMG=${IMG:-<your-registry>/kubevirt-wol:latest}
 make deploy-openshift IMG=$IMG
 echo "✓ Privileged operator deployed"
 echo ""

@@ -1,0 +1,45 @@
+apiVersion: wol.pillon.org/v1beta1
+kind: WolConfig
+metadata:
+  labels:
+    app.kubernetes.io/name: kubevirt-wol
+    app.kubernetes.io/managed-by: kustomize
+  name: default
+spec:
+  # Discovery mode: All (default), LabelSelector, or Explicit
+  discoveryMode: All
+  
+  # Namespaces to monitor for VMs (empty = all namespaces)
+  namespaceSelectors:
+    - default
+  
+  # UDP ports for Wake-on-LAN packets (array, default: [9])
+  wolPorts: [9]
+  
+  # Cache TTL in seconds for VM mappings
+  cacheTTL: 300
+  
+  # Agent DaemonSet configuration
+  agent:
+    # Node selector (optional)
+    # nodeSelector:
+    #   kubernetes.io/os: linux
+    
+    # Tolerations (optional)
+    # tolerations:
+    # - key: "node-role.kubernetes.io/master"
+    #   operator: "Exists"
+    #   effect: "NoSchedule"
+    
+    # Resources (optional)
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "64Mi"
+      limits:
+        cpu: "100m"
+        memory: "128Mi"
+    
+    # Image (optional, defaults to controller's default)
+    # image: "quay.io/kubevirtwol/kubevirt-wol-agent:latest"
+    imagePullPolicy: IfNotPresent

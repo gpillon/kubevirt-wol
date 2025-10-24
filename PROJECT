@@ -13,11 +13,11 @@ repo: github.com/gpillon/kubevirt-wol
 resources:
 - api:
     crdVersion: v1
-    namespaced: true
+    namespaced: false
   controller: true
   domain: pillon.org
   group: wol
-  kind: Config
+  kind: WolConfig
   path: github.com/gpillon/kubevirt-wol/api/v1beta1
   version: v1beta1
 version: "3"

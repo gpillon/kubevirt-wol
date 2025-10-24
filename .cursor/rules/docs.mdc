@@ -1,0 +1,443 @@
+---
+alwaysApply: true
+---
+# KubeVirt Wake-on-LAN Operator - Cursor Rules
+
+## Project Structure
+
+This is a Kubernetes Operator built with Kubebuilder that enables Wake-on-LAN functionality for KubeVirt VirtualMachines.
+
+### Key Components
+
+- **Manager** (`cmd/manager/`): Main operator controller with gRPC server
+- **Agent** (`cmd/agent/`): DaemonSet component for UDP packet listening
+- **API** (`api/v1beta1/`): Custom Resource Definitions (CRDs)
+- **Controllers** (`internal/controller/`): Reconciliation logic
+- **WOL Logic** (`internal/wol/`): Wake-on-LAN packet handling and KubeVirt integration
+
+## Documentation Organization
+
+### ⚠️ CRITICAL RULE: Documentation Location
+
+**ALL documentation must be stored in the `docs/` directory.**
+
+**The ONLY exception is `README.md` which must remain in the project root.**
+
+#### Documentation Structure
+
+```
+kubevirt-wol/
+├── README.md                    # ✅ Main project README (ONLY .md file in root)
+└── docs/                        # ✅ ALL other documentation goes here
+    ├── ARCHITECTURE.md          # Architecture and design decisions
+    ├── QUICKSTART.md            # Quick start guide
+    ├── TESTING.md               # Testing procedures
+    ├── openshift.md             # OpenShift-specific deployment
+    └── [other documentation]
+```
+
+### Documentation Guidelines
+
+1. **Generic Examples Only**: Documentation must ALWAYS use generic, placeholder examples
+   - ❌ NEVER use real/specific user configurations
+   - ❌ NEVER use actual IP addresses, hostnames, namespaces from user environment
+   - ✅ Use placeholders like `<registry>`, `<namespace>`, `<vm-name>`, `<mac-address>`
+   - ✅ Use example values like `example.com`, `192.168.1.100`, `my-vm`, `default`
+
+2. **Example Format**:
+   ```yaml
+   # ✅ GOOD - Generic example
+   apiVersion: wol.pillon.org/v1beta1
+   kind: WolConfig
+   metadata:
+     name: my-wol-config
+   spec:
+     namespaceSelectors: [default, production]
+     wolPorts: [9]
+   ```
+
+   ```yaml
+   # ❌ BAD - Specific to user environment
+   apiVersion: wol.pillon.org/v1beta1
+   kind: WolConfig
+   metadata:
+     name: test-wol-final
+   spec:
+     namespaceSelectors: [win11-aqua-elk]
+     wolPorts: [9]
+   ```
+
+3. **No Personal Information**:
+   - ❌ No real quay.io usernames
+   - ❌ No actual VM names from testing
+   - ❌ No specific node names or IPs
+   - ✅ Use `<your-registry>`, `<your-vm>`, `<node-ip>`
+
+## Code Style
+
+### Go Code
+
+- Follow standard Go conventions and `gofmt` formatting
+- Use structured logging (logr) for all log messages
+- Add kubebuilder RBAC markers for all controller operations
+- Keep controllers focused and single-purpose
+
+### Generated Code
+
+DO NOT manually edit generated files:
+- `api/v1beta1/zz_generated.deepcopy.go`
+- `config/crd/bases/*.yaml` (regenerate with `make manifests`)
+- `proto/*.pb.go` (regenerate with `make proto`)
+
+Instead, modify source files and regenerate:
+```bash
+make manifests  # Regenerate CRDs and RBAC
+make generate   # Regenerate DeepCopy methods
+make proto      # Regenerate protobuf code
+```
+
+## Development Workflow
+
+### Making Changes
+
+1. **API Changes**: 
+   - Edit `api/v1beta1/*_types.go`
+   - Run `make manifests generate`
+   - Rebuild and test
+
+2. **Controller Changes**:
+   - Edit files in `internal/controller/`
+   - Update RBAC markers if needed
+   - Run `make manifests`
+   - Test reconciliation logic
+
+3. **gRPC Changes**:
+   - Edit `proto/*.proto`
+   - Run `make proto`
+   - Update client and server code
+
+### Testing
+
+```bash
+# Unit tests
+make test
+
+# Build locally
+make build
+
+# Build and push images
+make docker-build docker-push IMG=<your-registry>/kubevirt-wol:tag
+
+# Deploy to cluster
+make deploy IMG=<your-registry>/kubevirt-wol:tag
+
+# Deploy to OpenShift
+make deploy-openshift IMG=<your-registry>/kubevirt-wol:tag
+```
+
+## Architecture Notes
+
+### Distributed Design
+
+The operator uses a distributed architecture with two components:
+
+1. **Manager (Controller)**: 
+   - Runs as a Deployment
+   - Reconciles WolConfig CRDs
+   - Manages agent DaemonSets dynamically
+   - Receives WOL events via gRPC
+   - Starts VirtualMachines
+
+2. **Agent (DaemonSet)**:
+   - One pod per node (created dynamically by controller)
+   - Listens for UDP WOL packets
+   - Reports events to manager via gRPC
+   - Uses hostNetwork for broadcast reception
+
+### Key Concepts
+
+- **Dynamic DaemonSet Management**: Controller creates/updates/deletes agent DaemonSets based on WolConfig
+- **OwnerReference**: Automatic cleanup when WolConfig is deleted
+- **Two-Level Deduplication**: Local (agent, 2s) + Global (manager, 10s)
+- **Multiple Discovery Modes**: All, LabelSelector, Explicit MAC mappings
+
+## Common Tasks
+
+### Add New Field to WolConfig
+
+1. Edit `api/v1beta1/wolconfig_types.go`
+2. Add field with JSON tags and comments
+3. Run `make manifests generate`
+4. Update controller logic in `internal/controller/`
+5. Update sample in `config/samples/`
+6. Update documentation in `docs/`
+
+### Add New Metrics
+
+1. Define metric in controller initialization
+2. Register with Prometheus registry
+3. Update metric in reconciliation logic
+4. Document in `docs/`
+
+### Debug Issues
+
+```bash
+# Check manager logs
+kubectl logs -n kubevirt-wol-system -l control-plane=controller-manager -f
+
+# Check agent logs  
+kubectl logs -n kubevirt-wol-system -l app=wol-agent -f
+
+# Check WolConfig status
+kubectl describe wolconfig <name>
+
+# Check DaemonSet (dynamically created)
+kubectl get daemonset -n kubevirt-wol-system
+```
+
+## Important Files
+
+- `Makefile`: Build, test, deploy targets
+- `PROJECT`: Kubebuilder project metadata
+- `go.mod`, `go.sum`: Go dependencies
+- `Dockerfile`: Multi-stage build for both manager and agent
+- `config/`: Kustomize manifests for deployment
+
+## Contributing
+
+When making changes:
+
+1. Keep documentation generic (no user-specific examples)
+2. Store all docs in `docs/` (except README.md)
+3. Run `make manifests generate` after API changes
+4. Test on both Kubernetes and OpenShift if possible
+5. Update relevant documentation
+6. Ensure all tests pass (`make test`)
+
+## Resources
+
+- Kubebuilder: https://book.kubebuilder.io
+- KubeVirt: https://kubevirt.io
+- Controller Runtime: https://pkg.go.dev/sigs.k8s.io/controller-runtime
+- gRPC: https://grpc.io
+
+# KubeVirt Wake-on-LAN Operator - Cursor Rules
+
+## Project Structure
+
+This is a Kubernetes Operator built with Kubebuilder that enables Wake-on-LAN functionality for KubeVirt VirtualMachines.
+
+### Key Components
+
+- **Manager** (`cmd/manager/`): Main operator controller with gRPC server
+- **Agent** (`cmd/agent/`): DaemonSet component for UDP packet listening
+- **API** (`api/v1beta1/`): Custom Resource Definitions (CRDs)
+- **Controllers** (`internal/controller/`): Reconciliation logic
+- **WOL Logic** (`internal/wol/`): Wake-on-LAN packet handling and KubeVirt integration
+
+## Documentation Organization
+
+### ⚠️ CRITICAL RULE: Documentation Location
+
+**ALL documentation must be stored in the `docs/` directory.**
+
+**The ONLY exception is `README.md` which must remain in the project root.**
+
+#### Documentation Structure
+
+```
+kubevirt-wol/
+├── README.md                    # ✅ Main project README (ONLY .md file in root)
+└── docs/                        # ✅ ALL other documentation goes here
+    ├── ARCHITECTURE.md          # Architecture and design decisions
+    ├── QUICKSTART.md            # Quick start guide
+    ├── TESTING.md               # Testing procedures
+    ├── openshift.md             # OpenShift-specific deployment
+    └── [other documentation]
+```
+
+### Documentation Guidelines
+
+1. **Generic Examples Only**: Documentation must ALWAYS use generic, placeholder examples
+   - ❌ NEVER use real/specific user configurations
+   - ❌ NEVER use actual IP addresses, hostnames, namespaces from user environment
+   - ✅ Use placeholders like `<registry>`, `<namespace>`, `<vm-name>`, `<mac-address>`
+   - ✅ Use example values like `example.com`, `192.168.1.100`, `my-vm`, `default`
+
+2. **Example Format**:
+   ```yaml
+   # ✅ GOOD - Generic example
+   apiVersion: wol.pillon.org/v1beta1
+   kind: WolConfig
+   metadata:
+     name: my-wol-config
+   spec:
+     namespaceSelectors: [default, production]
+     wolPorts: [9]
+   ```
+
+   ```yaml
+   # ❌ BAD - Specific to user environment
+   apiVersion: wol.pillon.org/v1beta1
+   kind: WolConfig
+   metadata:
+     name: test-wol-final
+   spec:
+     namespaceSelectors: [win11-aqua-elk]
+     wolPorts: [9]
+   ```
+
+3. **No Personal Information**:
+   - ❌ No real quay.io usernames
+   - ❌ No actual VM names from testing
+   - ❌ No specific node names or IPs
+   - ✅ Use `<your-registry>`, `<your-vm>`, `<node-ip>`
+
+## Code Style
+
+### Go Code
+
+- Follow standard Go conventions and `gofmt` formatting
+- Use structured logging (logr) for all log messages
+- Add kubebuilder RBAC markers for all controller operations
+- Keep controllers focused and single-purpose
+
+### Generated Code
+
+DO NOT manually edit generated files:
+- `api/v1beta1/zz_generated.deepcopy.go`
+- `config/crd/bases/*.yaml` (regenerate with `make manifests`)
+- `proto/*.pb.go` (regenerate with `make proto`)
+
+Instead, modify source files and regenerate:
+```bash
+make manifests  # Regenerate CRDs and RBAC
+make generate   # Regenerate DeepCopy methods
+make proto      # Regenerate protobuf code
+```
+
+## Development Workflow
+
+### Making Changes
+
+1. **API Changes**: 
+   - Edit `api/v1beta1/*_types.go`
+   - Run `make manifests generate`
+   - Rebuild and test
+
+2. **Controller Changes**:
+   - Edit files in `internal/controller/`
+   - Update RBAC markers if needed
+   - Run `make manifests`
+   - Test reconciliation logic
+
+3. **gRPC Changes**:
+   - Edit `proto/*.proto`
+   - Run `make proto`
+   - Update client and server code
+
+### Testing
+
+```bash
+# Unit tests
+make test
+
+# Build locally
+make build
+
+# Build and push images
+make docker-build docker-push IMG=<your-registry>/kubevirt-wol:tag
+
+# Deploy to cluster
+make deploy IMG=<your-registry>/kubevirt-wol:tag
+
+# Deploy to OpenShift
+make deploy-openshift IMG=<your-registry>/kubevirt-wol:tag
+```
+
+## Architecture Notes
+
+### Distributed Design
+
+The operator uses a distributed architecture with two components:
+
+1. **Manager (Controller)**: 
+   - Runs as a Deployment
+   - Reconciles WolConfig CRDs
+   - Manages agent DaemonSets dynamically
+   - Receives WOL events via gRPC
+   - Starts VirtualMachines
+
+2. **Agent (DaemonSet)**:
+   - One pod per node (created dynamically by controller)
+   - Listens for UDP WOL packets
+   - Reports events to manager via gRPC
+   - Uses hostNetwork for broadcast reception
+
+### Key Concepts
+
+- **Dynamic DaemonSet Management**: Controller creates/updates/deletes agent DaemonSets based on WolConfig
+- **OwnerReference**: Automatic cleanup when WolConfig is deleted
+- **Two-Level Deduplication**: Local (agent, 2s) + Global (manager, 10s)
+- **Multiple Discovery Modes**: All, LabelSelector, Explicit MAC mappings
+
+## Common Tasks
+
+### Add New Field to WolConfig
+
+1. Edit `api/v1beta1/wolconfig_types.go`
+2. Add field with JSON tags and comments
+3. Run `make manifests generate`
+4. Update controller logic in `internal/controller/`
+5. Update sample in `config/samples/`
+6. Update documentation in `docs/`
+
+### Add New Metrics
+
+1. Define metric in controller initialization
+2. Register with Prometheus registry
+3. Update metric in reconciliation logic
+4. Document in `docs/`
+
+### Debug Issues
+
+```bash
+# Check manager logs
+kubectl logs -n kubevirt-wol-system -l control-plane=controller-manager -f
+
+# Check agent logs  
+kubectl logs -n kubevirt-wol-system -l app=wol-agent -f
+
+# Check WolConfig status
+kubectl describe wolconfig <name>
+
+# Check DaemonSet (dynamically created)
+kubectl get daemonset -n kubevirt-wol-system
+```
+
+## Important Files
+
+- `Makefile`: Build, test, deploy targets
+- `PROJECT`: Kubebuilder project metadata
+- `go.mod`, `go.sum`: Go dependencies
+- `Dockerfile`: Multi-stage build for both manager and agent
+- `config/`: Kustomize manifests for deployment
+
+## Contributing
+
+When making changes:
+
+1. Keep documentation generic (no user-specific examples)
+2. Store all docs in `docs/` (except README.md)
+3. Run `make manifests generate` after API changes
+4. Test on both Kubernetes and OpenShift if possible
+5. Update relevant documentation
+6. Ensure all tests pass (`make test`)
+
+## Resources
+
+- Kubebuilder: https://book.kubebuilder.io
+- KubeVirt: https://kubevirt.io
+- Controller Runtime: https://pkg.go.dev/sigs.k8s.io/controller-runtime
+- gRPC: https://grpc.io
+

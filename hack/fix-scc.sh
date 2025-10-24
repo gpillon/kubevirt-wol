@@ -20,7 +20,7 @@ echo ""
 
 # Step 3: Redeploy with fixed configuration
 echo "[3/3] Redeploying with corrected configuration..."
-IMG=${IMG:-quay.io/rh-ee-gpillon/kubevirt-wol:latest}
+IMG=${IMG:-<your-registry>/kubevirt-wol:latest}
 make deploy-openshift IMG=$IMG
 echo "✓ Redeployed"
 echo ""

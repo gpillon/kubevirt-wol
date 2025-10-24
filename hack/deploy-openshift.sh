@@ -32,7 +32,7 @@ if ! oc auth can-i create securitycontextconstraints &> /dev/null; then
 fi
 
 # Set default image if not provided
-IMG=${IMG:-quay.io/gpillon/kubevirt-wol:latest}
+IMG=${IMG:-<your-registry>/kubevirt-wol:latest}
 echo "Using image: $IMG"
 echo ""
 

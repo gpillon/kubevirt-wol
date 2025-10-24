@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# Test script per verificare WOL
+# Test script to verify WOL
 # Usage: ./test-wol.sh <MAC_ADDRESS> [TARGET_IP]
 
-MAC="${1:-02:f1:ef:00:00:0b}"
+MAC="${1:-52:54:00:12:34:56}"
 TARGET="${2:-255.255.255.255}"  # broadcast by default
 
 echo "=========================================="

@@ -40,13 +40,13 @@ var _ = Describe("Config Controller", func() {
 			Name:      resourceName,
 			Namespace: "default", // TODO(user):Modify as needed
 		}
-		config := &wolv1beta1.Config{}
+		config := &wolv1beta1.WolConfig{}
 
 		BeforeEach(func() {
-			By("creating the custom resource for the Kind Config")
+			By("creating the custom resource for the Kind WolConfig")
 			err := k8sClient.Get(ctx, typeNamespacedName, config)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &wolv1beta1.Config{
+				resource := &wolv1beta1.WolConfig{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
@@ -59,16 +59,16 @@ var _ = Describe("Config Controller", func() {
 
 		AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &wolv1beta1.Config{}
+			resource := &wolv1beta1.WolConfig{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Cleanup the specific resource instance Config")
+			By("Cleanup the specific resource instance WolConfig")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
-			controllerReconciler := &ConfigReconciler{
+			controllerReconciler := &WolConfigReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}

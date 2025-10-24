@@ -21,7 +21,7 @@ echo "✓ Old deployment removed"
 # Deploy
 echo ""
 echo "[3/3] Deploying..."
-IMG=${IMG:-quay.io/rh-ee-gpillon/kubevirt-wol:latest}
+IMG=${IMG:-<your-registry>/kubevirt-wol:latest}
 make deploy-openshift IMG=$IMG
 
 echo ""

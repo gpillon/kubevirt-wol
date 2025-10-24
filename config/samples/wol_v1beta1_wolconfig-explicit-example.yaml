@@ -1,0 +1,28 @@
+# Example with Explicit mode
+apiVersion: wol.pillon.org/v1beta1
+kind: WolConfig
+metadata:
+  name: explicit-example
+spec:
+  discoveryMode: Explicit
+  
+  # Explicit MAC to VM mappings
+  explicitMappings:
+    - macAddress: "52:54:00:12:34:56"
+      vmName: my-vm-1
+      namespace: default
+    - macAddress: "52:54:00:ab:cd:ef"
+      vmName: my-vm-2
+      namespace: production
+  
+  wolPorts: [9]
+  cacheTTL: 600
+  
+  agent:
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "64Mi"
+      limits:
+        cpu: "100m"
+        memory: "128Mi"

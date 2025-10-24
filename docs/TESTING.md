@@ -5,14 +5,14 @@ The operator looks running successfully! Here's how to test it.
 ## Current Status
 
 ✅ **WOL Listener**: Running on UDP port 9
-✅ **Managed VMs**: 5 VMs discovered
-✅ **Pod Node**: <OCP_NODE>
+✅ **Managed VMs**: N VMs discovered
+✅ **Pod Node**: <node-name>
 
 ### Discovered VMs
 
 ```
-02:f1:ef:00:00:0b → <VM_NAME_1> (default)
-02:f1:ef:00:00:03 → <VM_NAME_2> (default)
+52:54:00:12:34:56 → my-vm-1 (default)
+52:54:00:ab:cd:ef → my-vm-2 (default)
 #...other VMs
 ```
 
@@ -22,10 +22,10 @@ The operator looks running successfully! Here's how to test it.
 
 ```bash
 # Test with broadcast
-./test-wol.sh 02:f1:ef:00:00:0b
+./hack/test-wol.sh 52:54:00:12:34:56
 
 # Test to specific node
-./test-wol.sh 02:f1:ef:00:00:0b <IP_OF_OCP_NODE>
+./hack/test-wol.sh 52:54:00:12:34:56 <node-ip>
 ```
 
 ### Method 2: Using wakeonlan Command
@@ -35,10 +35,10 @@ The operator looks running successfully! Here's how to test it.
 dnf install -y wol
 
 # Send WOL packet
-wakeonlan -i <NODE_IP> -p 9 02:f1:ef:00:00:0b
+wakeonlan -i <node-ip> -p 9 52:54:00:12:34:56
 
 # Or broadcast
-wakeonlan -i 255.255.255.255 -p 9 02:f1:ef:00:00:0b
+wakeonlan -i 255.255.255.255 -p 9 52:54:00:12:34:56
 ```
 
 ### Method 3: Using Python
@@ -46,8 +46,8 @@ wakeonlan -i 255.255.255.255 -p 9 02:f1:ef:00:00:0b
 ```python
 import socket
 
-mac = '02:f1:ef:00:00:0b'
-target_ip = '<IP_OF_OCP_NODE>'  # or '255.255.255.255' for broadcast
+mac = '52:54:00:12:34:56'
+target_ip = '<node-ip>'  # or '255.255.255.255' for broadcast
 port = 9
 
 # Create magic packet
@@ -70,13 +70,13 @@ print(f"WOL packet sent to {target_ip}:9 for MAC {mac}")
 **Possible causes:**
 
 1. **Packet not reaching the node**
-   - The operator runs on node `<OCP_NODE>` with `hostNetwork: true`
-   - WOL packets must reach this specific node
+   - The operator runs with `hostNetwork: true`
+   - WOL packets must reach the node where agent is running
    - Check your network routing
 
 2. **Firewall blocking UDP port 9**
    ```bash
-   # On the OpenShift node
+   # On the node
    sudo firewall-cmd --list-all | grep 9
    sudo firewall-cmd --add-port=9/udp --permanent
    sudo firewall-cmd --reload
@@ -86,7 +86,7 @@ print(f"WOL packet sent to {target_ip}:9 for MAC {mac}")
    - WOL broadcasts need to be on the same network segment
    - Find the node's IP:
      ```bash
-     oc get node <OCP_NODE> -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}'
+     oc get node <node-name> -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}'
      ```
 
 ### Verification Steps
@@ -110,7 +110,7 @@ Then send a WOL packet from another terminal.
 #### 3. Get node IP address
 
 ```bash
-oc get node <OCP_NODE> -o wide
+oc get node <node-name> -o wide
 ```
 
 Use the INTERNAL-IP to send WOL packets directly to that node.
@@ -132,13 +132,13 @@ apk add --no-cache python3
 # Create and send WOL packet
 python3 << 'EOF'
 import socket
-mac = '02:f1:ef:00:00:0b'
+mac = '52:54:00:12:34:56'
 mac_bytes = bytes.fromhex(mac.replace(':', ''))
 magic = b'\xff' * 6 + mac_bytes * 16
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-# Send to the operator pod's node
-sock.sendto(magic, ('<NODE_IP>', 9))
+# Send to the agent pod's node
+sock.sendto(magic, ('<node-ip>', 9))
 print("Sent WOL packet")
 EOF
 ```
@@ -149,7 +149,7 @@ The MAC mapping is correct, so if a WOL packet arrives, it should try to start t
 
 ```bash
 # Watch for VM start attempts
-oc get vm -n <MANESPACE> <VM_NAME> -o jsonpath='{.spec.running}'
+oc get vm -n <namespace> <vm-name> -o jsonpath='{.spec.running}'
 
 # Should change from false to true when WOL is received
 ```
@@ -159,9 +159,9 @@ oc get vm -n <MANESPACE> <VM_NAME> -o jsonpath='{.spec.running}'
 When a WOL packet is successfully received, you should see:
 
 ```
-INFO    listener   Valid WOL packet received    {"mac": "02:f1:ef:00:00:0b", "from": "<source_ip>:<port>"}
-INFO    listener   Starting VM for WOL request  {"mac": "02:f1:ef:00:00:0b", "vm": "<VM_NAME>", "namespace": "default", "from": "<source_ip>:<port>"}
-INFO    vmstarter  Successfully started VM      {"vm": "<VM_NAME>", "namespace": "default"}
+INFO    listener   Valid WOL packet received    {"mac": "52:54:00:12:34:56", "from": "<source_ip>:<port>"}
+INFO    listener   Starting VM for WOL request  {"mac": "52:54:00:12:34:56", "vm": "my-vm", "namespace": "default", "from": "<source_ip>:<port>"}
+INFO    vmstarter  Successfully started VM      {"vm": "my-vm", "namespace": "default"}
 ```
 
 ## Network Requirements
@@ -187,12 +187,15 @@ ss -ulpn | grep :9
 
 ## Quick Test: Send WOL from Same Node
 
-If you have access to the OpenShift node directly:
+If you have access to the node directly:
 
 ```bash
-# SSH to <NODE_NAME>
-# Then send WOL locally
-echo -ne '\xFF\xFF\xFF\xFF\xFF\xFF\x02\xF1\xEF\x00\x00\x0B\x02\xF1\xEF\x00\x00\x0B\x02\xF1\xEF\x00\x00\x0B\x02\xF1\xEF\x00\x00\x0B\x02\xF1\xEF\x00\x00\x0B\x02\xF1\xEF\x00\x00\x0B\x02\xF1\xEF\x00\x00\x0B\x02\xF1\xEF\x00\x00\x0B\x02\xF1\xEF\x00\x00\x0B\x02\xF1\xEF\x00\x00\x0B\x02\xF1\xEF\x00\x00\x0B\x02\xF1\xEF\x00\x00\x0B\x02\xF1\xEF\x00\x00\x0B\x02\xF1\xEF\x00\x00\x0B\x02\xF1\xEF\x00\x00\x0B\x02\xF1\xEF\x00\x00\x0B' | nc -u localhost 9
+# SSH to <node-name>
+# Then send WOL locally (replace with your MAC address bytes)
+echo -ne '\xFF\xFF\xFF\xFF\xFF\xFF' | nc -u localhost 9
+
+# Or use wakeonlan
+wakeonlan -i localhost -p 9 52:54:00:12:34:56
 ```
 
 This sends the WOL packet to localhost, which should definitely work if the listener is running.
