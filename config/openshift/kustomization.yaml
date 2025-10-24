@@ -1,0 +1,30 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: kubevirt-wol-system
+
+resources:
+  - ../default
+  - scc.yaml
+
+# Patch manager deployment to use non-conflicting ports with hostNetwork
+patches:
+  # First, remove security restrictions that conflict with privileged mode
+  - path: remove_privilege_escalation_patch.yaml
+    target:
+      kind: Deployment
+      name: controller-manager
+  - path: remove_security_patch.yaml
+    target:
+      kind: Deployment
+      name: controller-manager
+  - path: remove_ports_patch.yaml
+    target:
+      kind: Deployment
+      name: controller-manager
+  # Then apply privileged configuration
+  - path: manager_patch.yaml
+    target:
+      kind: Deployment
+      name: controller-manager
+

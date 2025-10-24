@@ -1,0 +1,280 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: |-
+      [
+        {
+          "apiVersion": "wol.pillon.org/v1beta1",
+          "kind": "Config",
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/managed-by": "kustomize",
+              "app.kubernetes.io/name": "kubevirt-wol"
+            },
+            "name": "wol-config"
+          },
+          "spec": {
+            "cacheTTL": 300,
+            "discoveryMode": "All",
+            "namespaceSelectors": [
+              "default",
+              "kube-system"
+            ],
+            "wolPort": 9
+          }
+        },
+        {
+          "apiVersion": "wol.pillon.org/v1beta1",
+          "kind": "Config",
+          "metadata": {
+            "name": "wol-config-explicit"
+          },
+          "spec": {
+            "cacheTTL": 600,
+            "discoveryMode": "Explicit",
+            "explicitMappings": [
+              {
+                "macAddress": "52:54:00:12:34:56",
+                "namespace": "default",
+                "vmName": "my-vm-1"
+              },
+              {
+                "macAddress": "52:54:00:ab:cd:ef",
+                "namespace": "production",
+                "vmName": "my-vm-2"
+              }
+            ],
+            "wolPort": 9
+          }
+        },
+        {
+          "apiVersion": "wol.pillon.org/v1beta1",
+          "kind": "Config",
+          "metadata": {
+            "name": "wol-config-labelselector"
+          },
+          "spec": {
+            "cacheTTL": 300,
+            "discoveryMode": "LabelSelector",
+            "namespaceSelectors": [
+              "production"
+            ],
+            "vmSelector": {
+              "matchLabels": {
+                "wol.pillon.org/enabled": "true"
+              }
+            },
+            "wolPort": 9
+          }
+        }
+      ]
+    capabilities: Basic Install
+    createdAt: "2025-10-24T02:31:52Z"
+    operators.operatorframework.io/builder: operator-sdk-v1.39.1
+    operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
+  name: kubevirt-wol.v0.0.1
+  namespace: placeholder
+spec:
+  minKubeVersion: "1.11.3"
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+    - description: Config is the Schema for the Wake-on-LAN configurations API
+      displayName: Config
+      kind: Config
+      name: configs.wol.pillon.org
+      version: v1beta1
+  description: A Kubernetes Operator that enables Wake-on-LAN functionality for KubeVirt
+    VirtualMachines. This operator listens for WOL magic packets on the network and
+    automatically starts the corresponding VirtualMachines in your Kubernetes cluster.
+  displayName: Kubevirt Wake on Lan
+  icon:
+  - base64data: ""
+    mediatype: ""
+  install:
+    spec:
+      clusterPermissions:
+      - rules:
+        - apiGroups:
+          - ""
+          resources:
+          - namespaces
+          verbs:
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - kubevirt.io
+          resources:
+          - virtualmachines
+          verbs:
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - subresources.kubevirt.io
+          resources:
+          - virtualmachines/start
+          verbs:
+          - update
+        - apiGroups:
+          - wol.pillon.org
+          resources:
+          - configs
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - wol.pillon.org
+          resources:
+          - configs/finalizers
+          verbs:
+          - update
+        - apiGroups:
+          - wol.pillon.org
+          resources:
+          - configs/status
+          verbs:
+          - get
+          - patch
+          - update
+        - apiGroups:
+          - authentication.k8s.io
+          resources:
+          - tokenreviews
+          verbs:
+          - create
+        - apiGroups:
+          - authorization.k8s.io
+          resources:
+          - subjectaccessreviews
+          verbs:
+          - create
+        serviceAccountName: kubevirt-wol-controller-manager
+      deployments:
+      - label:
+          app.kubernetes.io/managed-by: kustomize
+          app.kubernetes.io/name: kubevirt-wol
+          control-plane: controller-manager
+        name: kubevirt-wol-controller-manager
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              control-plane: controller-manager
+          strategy:
+            type: Recreate
+          template:
+            metadata:
+              annotations:
+                kubectl.kubernetes.io/default-container: manager
+              labels:
+                control-plane: controller-manager
+            spec:
+              containers:
+              - args:
+                - --metrics-bind-address=:8443
+                - --leader-elect
+                - --health-probe-bind-address=:8081
+                command:
+                - /manager
+                image: controller:latest
+                livenessProbe:
+                  httpGet:
+                    path: /healthz
+                    port: 8081
+                  initialDelaySeconds: 15
+                  periodSeconds: 20
+                name: manager
+                ports:
+                - containerPort: 9
+                  name: wol
+                  protocol: UDP
+                readinessProbe:
+                  httpGet:
+                    path: /readyz
+                    port: 8081
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                resources:
+                  limits:
+                    cpu: 500m
+                    memory: 128Mi
+                  requests:
+                    cpu: 10m
+                    memory: 64Mi
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                    - ALL
+              hostNetwork: true
+              securityContext:
+                runAsNonRoot: true
+              serviceAccountName: kubevirt-wol-controller-manager
+              terminationGracePeriodSeconds: 10
+      permissions:
+      - rules:
+        - apiGroups:
+          - ""
+          resources:
+          - configmaps
+          verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+        - apiGroups:
+          - coordination.k8s.io
+          resources:
+          - leases
+          verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+        - apiGroups:
+          - ""
+          resources:
+          - events
+          verbs:
+          - create
+          - patch
+        serviceAccountName: kubevirt-wol-controller-manager
+    strategy: deployment
+  installModes:
+  - supported: false
+    type: OwnNamespace
+  - supported: false
+    type: SingleNamespace
+  - supported: false
+    type: MultiNamespace
+  - supported: true
+    type: AllNamespaces
+  keywords:
+  - kubevirt
+  - wol
+  - wake on lan
+  - wake
+  links:
+  - name: Kubevirt Wol
+    url: https://kubevirt-wol.domain
+  maturity: alpha
+  provider:
+    name: K4all
+    url: https://github.com/gpillon/kubevirt-wol
+  version: 0.0.1

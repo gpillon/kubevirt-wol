@@ -1,0 +1,62 @@
+apiVersion: wol.pillon.org/v1beta1
+kind: Config
+metadata:
+  labels:
+    app.kubernetes.io/name: kubevirt-wol
+    app.kubernetes.io/managed-by: kustomize
+  name: wol-config
+spec:
+  # Discovery mode: All (default), LabelSelector, or Explicit
+  discoveryMode: All
+  
+  # Namespaces to monitor for VMs (empty = all namespaces)
+  namespaceSelectors:
+    - default
+    - kube-system
+  
+  # UDP port for Wake-on-LAN packets
+  wolPort: 9
+  
+  # Cache TTL in seconds for VM mappings
+  cacheTTL: 300
+
+---
+# Example with LabelSelector mode
+apiVersion: wol.pillon.org/v1beta1
+kind: Config
+metadata:
+  name: wol-config-labelselector
+spec:
+  discoveryMode: LabelSelector
+  
+  # Only manage VMs with this label
+  vmSelector:
+    matchLabels:
+      wol.pillon.org/enabled: "true"
+  
+  namespaceSelectors:
+    - production
+  
+  wolPort: 9
+  cacheTTL: 300
+
+---
+# Example with Explicit mode
+apiVersion: wol.pillon.org/v1beta1
+kind: Config
+metadata:
+  name: wol-config-explicit
+spec:
+  discoveryMode: Explicit
+  
+  # Explicit MAC to VM mappings
+  explicitMappings:
+    - macAddress: "52:54:00:12:34:56"
+      vmName: my-vm-1
+      namespace: default
+    - macAddress: "52:54:00:ab:cd:ef"
+      vmName: my-vm-2
+      namespace: production
+  
+  wolPort: 9
+  cacheTTL: 600

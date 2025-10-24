@@ -1,0 +1,50 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: '[]'
+    capabilities: Basic Install
+  name: kubevirt-wol.v0.0.0
+  namespace: placeholder
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+    - description: Config is the Schema for the Wake-on-LAN configurations API
+      displayName: Config
+      kind: Config
+      name: configs.wol.pillon.org
+      version: v1beta1
+  description: A Kubernetes Operator that enables Wake-on-LAN functionality for KubeVirt
+    VirtualMachines. This operator listens for WOL magic packets on the network and
+    automatically starts the corresponding VirtualMachines in your Kubernetes cluster.
+  displayName: Kubevirt Wake on Lan
+  icon:
+  - base64data: ""
+    mediatype: ""
+  install:
+    spec:
+      deployments: null
+    strategy: ""
+  installModes:
+  - supported: false
+    type: OwnNamespace
+  - supported: false
+    type: SingleNamespace
+  - supported: false
+    type: MultiNamespace
+  - supported: true
+    type: AllNamespaces
+  keywords:
+  - kubevirt
+  - wol
+  - wake on lan
+  - wake
+  links:
+  - name: Kubevirt Wol
+    url: https://kubevirt-wol.domain
+  maturity: alpha
+  provider:
+    name: K4all
+    url: https://github.com/gpillon/kubevirt-wol
+  version: 0.0.0

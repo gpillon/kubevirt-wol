@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller-manager
+  namespace: system
+spec:
+  template:
+    spec:
+      containers:
+      - name: manager
+        args:
+          - --leader-elect
+          - --health-probe-bind-address=:8088
+          - --metrics-bind-address=:8443
+        # Note: with hostNetwork=true, ports are automatically exposed on the host
+        # Ports are removed via JSON patch (remove_ports_patch.yaml)
+        securityContext:
+          privileged: true
+          allowPrivilegeEscalation: true
+          capabilities:
+            drop: []
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8088
+            scheme: HTTP
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8088
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 10
+
