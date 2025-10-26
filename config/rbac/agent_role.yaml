@@ -2,12 +2,15 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: kubevirt-wol-scc-user
+  labels:
+    app.kubernetes.io/name: kubevirt-wol
+    app.kubernetes.io/component: rbac
 rules:
   - apiGroups:
       - security.openshift.io
     resources:
       - securitycontextconstraints
     resourceNames:
-      - kubevirt-wol-wol-scc
+      - privileged  # Use OpenShift's built-in privileged SCC (ignored on vanilla K8s)
     verbs:
       - use

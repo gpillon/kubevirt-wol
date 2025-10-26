@@ -15,6 +15,9 @@ metadata:
           "name": "kubevirt-wol-system",
           "annotations": {
             "openshift.io/node-selector": ""
+          },
+          "labels": {
+            "openshift.io/cluster-monitoring": "true"
           }
         }
       }
@@ -24,11 +27,6 @@ spec:
   apiservicedefinitions: {}
   customresourcedefinitions:
     owned:
-    - description: Config is the Schema for the Wake-on-LAN configurations API
-      displayName: Config
-      kind: Config
-      name: configs.wol.pillon.org
-      version: v1beta1
     - description: WolConfig is the Schema for the Wake-on-LAN configurations API
       displayName: Wol Config
       kind: WolConfig
@@ -47,6 +45,15 @@ spec:
     - Three discovery modes: All VMs, Label Selector, or Explicit MAC mappings
     - Dynamic agent deployment per WolConfig
     - Automatic cleanup via OwnerReference
+    - Prometheus metrics integration
+
+    **Post-Installation (OpenShift)**: To enable metrics collection in OpenShift cluster monitoring, run:
+    ```
+    oc label namespace <operator-namespace> openshift.io/cluster-monitoring=true
+    ```
+    Replace `<operator-namespace>` with the namespace where the operator is installed (e.g., `kubevirt-wol-system`).
+
+    After labeling the namespace, the operator metrics will appear in OpenShift Console → Observe → Targets.
 
     **Usage**: After installation, create a WolConfig resource to configure Wake-on-LAN for your KubeVirt VirtualMachines.
 
@@ -62,7 +69,7 @@ spec:
         - apiGroups:
           - security.openshift.io
           resourceNames:
-          - kubevirt-wol-wol-scc
+          - privileged
           resources:
           - securitycontextconstraints
           verbs:

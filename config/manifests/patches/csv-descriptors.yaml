@@ -1,0 +1,44 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  name: kubevirt-wol.v0.0.1
+spec:
+  customresourcedefinitions:
+    owned:
+      - kind: WolConfig
+        name: wolconfigs.wol.pillon.org
+        version: v1beta1
+        resources:
+          - kind: DaemonSet
+            version: apps/v1
+          - kind: ServiceAccount
+            version: v1
+          - kind: Pod
+            version: v1
+        specDescriptors:
+          - path: discoveryMode
+            displayName: Discovery Mode
+            description: How VMs are discovered (All, LabelSelector, Explicit)
+            x-descriptors:
+              - 'urn:alm:descriptor:com.tectonic.ui:select'
+          - path: cacheTTL
+            displayName: Cache TTL
+            description: Time-to-live for cached mappings (seconds)
+            x-descriptors:
+              - 'urn:alm:descriptor:com.tectonic.ui:number'
+          - path: wolPorts
+            displayName: WOL Ports
+            description: UDP ports for Wake-on-LAN packets
+            x-descriptors:
+              - 'urn:alm:descriptor:com.tectonic.ui:numberList'
+        statusDescriptors:
+          - path: managedVMs
+            displayName: Managed VMs
+            description: Number of monitored VMs
+            x-descriptors:
+              - 'urn:alm:descriptor:com.tectonic.ui:number'
+          - path: conditions
+            displayName: Conditions
+            description: Operator reconciliation status
+            x-descriptors:
+              - 'urn:alm:descriptor:com.tectonic.ui:conditions'

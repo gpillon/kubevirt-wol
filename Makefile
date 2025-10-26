@@ -407,16 +407,12 @@ bundle: manifests kustomize operator-sdk yq ## Generate bundle manifests and met
 	$(OPERATOR_SDK) generate kustomize manifests -q
 	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
 	$(KUSTOMIZE) build config/manifests | \
-		$(YQ) eval 'select(.kind != "SecurityContextConstraints")' - | \
 		$(YQ) eval '(select(.kind == "Deployment" and .metadata.name == "kubevirt-wol-controller-manager") | .spec.template.spec.containers[] | select(.name == "manager") | .env[] | select(.name == "AGENT_IMAGE") | .value) = "$(AGENT_IMG)"' - | \
 		$(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS) --extra-service-accounts kubevirt-wol-wol-agent
-	@echo "Temporarily removing SCC for validation (operator-sdk doesn't support OpenShift-specific resources)..."
-	@rm -f bundle/manifests/*securitycontextconstraints*.yaml 2>/dev/null || true
 	@echo "Validating bundle..."
 	@$(OPERATOR_SDK) bundle validate ./bundle
-	@echo "Adding SCC to bundle manifests..."
-	@$(YQ) eval '.metadata.creationTimestamp = null' config/manifests/scc.yaml > bundle/manifests/kubevirt-wol-wol-scc_security.openshift.io_v1_securitycontextconstraints.yaml
 	@echo "Bundle generation completed successfully"
+	@echo "Note: Agent uses OpenShift 'privileged' SCC (automatically available on OpenShift, ignored on K8s)"
 
 .PHONY: bundle-build
 bundle-build: ## Build the bundle image.

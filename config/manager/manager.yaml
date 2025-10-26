@@ -71,12 +71,13 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
+          - --metrics-secure=false
         image: controller:latest
         name: manager
         ports:
-        - containerPort: 9
-          name: wol
-          protocol: UDP
+        - containerPort: 8443
+          name: https
+          protocol: TCP
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

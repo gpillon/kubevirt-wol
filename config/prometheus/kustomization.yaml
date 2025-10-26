@@ -5,7 +5,8 @@ resources:
 # to securely reference certificates created and managed by cert-manager.
 # Additionally, ensure that you uncomment the [METRICS WITH CERTMANAGER] patch under config/default/kustomization.yaml
 # to mount the "metrics-server-cert" secret in the Manager Deployment.
-patches:
- - path: monitor_tls_patch.yaml
-   target:
-     kind: ServiceMonitor
+# NOTE: Patch commented out for OpenShift - using insecureSkipVerify instead
+#patches:
+# - path: monitor_tls_patch.yaml
+#   target:
+#     kind: ServiceMonitor

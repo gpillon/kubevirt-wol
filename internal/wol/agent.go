@@ -48,7 +48,8 @@ type Agent struct {
 	dedupeCache    map[string]time.Time
 	dedupeLock     sync.RWMutex
 	dedupeDuration time.Duration
-	enableRawWoL   bool // Enable raw Ethernet WoL listener (Layer 2)
+	enableRawWoL   bool           // Enable raw Ethernet WoL listener (Layer 2)
+	wg             sync.WaitGroup // WaitGroup per aspettare tutte le goroutine
 }
 
 // NewAgent crea un nuovo agente WOL
@@ -139,14 +140,42 @@ func (a *Agent) Start(ctx context.Context) error {
 	}
 
 	// Start health check server
+	a.wg.Add(1)
 	go a.startHealthServer(ctx)
 
 	// Start listeners
+	a.wg.Add(1)
 	go a.listen(ctx)
+
+	a.wg.Add(1)
 	go a.cleanupCache(ctx)
 
+	// Aspetta il segnale di shutdown
 	<-ctx.Done()
+	a.log.Info("Shutdown signal received, stopping agent...")
+
+	// Ferma le risorse
 	a.Stop()
+
+	// Aspetta che tutte le goroutine finiscano con timeout
+	a.log.Info("Waiting for all goroutines to finish...")
+	done := make(chan struct{})
+	go func() {
+		a.wg.Wait()
+		close(done)
+	}()
+
+	// Timeout di 5 secondi per graceful shutdown
+	shutdownTimeout := time.NewTimer(5 * time.Second)
+	defer shutdownTimeout.Stop()
+
+	select {
+	case <-done:
+		a.log.Info("All goroutines finished, agent stopped successfully")
+	case <-shutdownTimeout.C:
+		a.log.Error(nil, "Timeout waiting for goroutines to finish - forcing exit")
+	}
+
 	return nil
 }
 
@@ -202,6 +231,7 @@ func (a *Agent) configureSocket() error {
 
 // listen loop principale per ricevere pacchetti UDP
 func (a *Agent) listen(ctx context.Context) {
+	defer a.wg.Done()
 	buffer := make([]byte, 1024)
 
 	a.log.Info("UDP listener loop started, waiting for WOL packets...")
@@ -209,7 +239,7 @@ func (a *Agent) listen(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			a.log.Info("Context cancelled, stopping listener")
+			a.log.Info("Context cancelled, stopping UDP listener")
 			return
 		default:
 			// Set read deadline per permettere check periodici del context
@@ -321,12 +351,14 @@ func (a *Agent) shouldProcess(mac string) bool {
 
 // cleanupCache pulisce periodicamente la cache di deduplica
 func (a *Agent) cleanupCache(ctx context.Context) {
+	defer a.wg.Done()
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
+			a.log.Info("Context cancelled, stopping cache cleanup")
 			return
 		case <-ticker.C:
 			a.dedupeLock.Lock()
@@ -446,6 +478,7 @@ func (a *Agent) stopRawListeners() {
 
 // startHealthServer starts HTTP server for health checks and metrics
 func (a *Agent) startHealthServer(ctx context.Context) {
+	defer a.wg.Done()
 	mux := http.NewServeMux()
 
 	// Health check endpoint

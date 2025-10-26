@@ -158,7 +158,6 @@ type AgentStatus struct {
 // +kubebuilder:printcolumn:name="WOL Port",type=integer,JSONPath=`.spec.wolPort`
 // +kubebuilder:printcolumn:name="Managed VMs",type=integer,JSONPath=`.status.managedVMs`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
-
 // WolConfig is the Schema for the Wake-on-LAN configurations API
 type WolConfig struct {
 	metav1.TypeMeta   `json:",inline"`

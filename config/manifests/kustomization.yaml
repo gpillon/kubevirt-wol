@@ -5,10 +5,14 @@ resources:
 - ../default
 - ../samples
 - ../scorecard
-- scc.yaml
 
-patches: []
-# - ../openshift
+patches:
+  - path: patches/csv-descriptors.yaml
+    target:
+      kind: ClusterServiceVersion
+      name: kubevirt-wol.v0.0.1
+# Note: SCC is not included in the bundle. On OpenShift, the agent uses the built-in 'privileged' SCC.
+# - scc.yaml
 # [WEBHOOK] To enable webhooks, uncomment all the sections with [WEBHOOK] prefix.
 # Do NOT uncomment sections with prefix [CERTMANAGER], as OLM does not support cert-manager.
 # These patches remove the unnecessary "cert" volume and its manager container volumeMount.

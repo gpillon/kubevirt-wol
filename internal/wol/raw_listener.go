@@ -34,6 +34,7 @@ type RawListener struct {
 
 	stopOnce sync.Once
 	closed   atomic.Bool
+	wg       sync.WaitGroup // Per aspettare che la goroutine finisca
 }
 
 // Backward-compatible constructor (same signature as prima)
@@ -137,6 +138,7 @@ func (r *RawListener) Start(ctx context.Context) error {
 	r.log.Info("Raw Ethernet listener started", "interface", r.interfaceName, "fd", fd)
 
 	// Start loop
+	r.wg.Add(1)
 	go r.listen(ctx)
 	return nil
 }
@@ -152,23 +154,25 @@ func (r *RawListener) Stop() {
 			_ = unix.Shutdown(r.fd, unix.SHUT_RD)
 			if err := unix.Close(r.fd); err != nil {
 				r.log.Error(err, "Failed to close raw socket")
-			} else {
-				r.log.Info("Raw Ethernet listener stopped")
 			}
 			r.fd = -1
 		}
+		// Aspetta che la goroutine finisca
+		r.wg.Wait()
+		r.log.Info("Raw Ethernet listener stopped")
 	})
 }
 
 // -------------------- Loop di ascolto --------------------
 
 func (r *RawListener) listen(ctx context.Context) {
+	defer r.wg.Done()
 	buffer := make([]byte, 2000) // un po' più di 1500 per eventuali tag
 	r.log.Info("Raw Ethernet listener loop started, waiting for WoL packets...")
 
 	for {
 		if ctx.Err() != nil || r.closed.Load() {
-			r.log.Info("Context cancelled or listener closed, stopping loop")
+			r.log.Info("Context cancelled or listener closed, stopping raw listener loop")
 			return
 		}
 

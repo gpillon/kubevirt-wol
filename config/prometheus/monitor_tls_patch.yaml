@@ -4,11 +4,9 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: kubevirt-wol-controller-manager-metrics-monitor
-  namespace: kubevirt-wol-system
 spec:
   endpoints:
-  - bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
-    path: /metrics
+  - path: /metrics
     port: metrics
     scheme: https
     tlsConfig:

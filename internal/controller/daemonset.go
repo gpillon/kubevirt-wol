@@ -320,9 +320,10 @@ func (r *WolConfigReconciler) buildAgentDaemonSet(wolConfig *wolv1beta1.WolConfi
 
 	// Build pod spec
 	podSpec := corev1.PodSpec{
-		HostNetwork:        true,
-		DNSPolicy:          corev1.DNSClusterFirstWithHostNet,
-		ServiceAccountName: serviceAccountName,
+		HostNetwork:                   true,
+		DNSPolicy:                     corev1.DNSClusterFirstWithHostNet,
+		ServiceAccountName:            serviceAccountName,
+		TerminationGracePeriodSeconds: pointer(int64(10)), // Graceful shutdown timeout
 		SecurityContext: &corev1.PodSecurityContext{
 			RunAsUser: pointer(int64(0)),
 		},
