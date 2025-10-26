@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -39,6 +40,7 @@ type Agent struct {
 	port           int
 	nodeName       string
 	operatorAddr   string
+	rawListeners   []*RawListener
 	log            logr.Logger
 	conn           *net.UDPConn
 	grpcConn       *grpc.ClientConn
@@ -46,6 +48,7 @@ type Agent struct {
 	dedupeCache    map[string]time.Time
 	dedupeLock     sync.RWMutex
 	dedupeDuration time.Duration
+	enableRawWoL   bool // Enable raw Ethernet WoL listener (Layer 2)
 }
 
 // NewAgent crea un nuovo agente WOL
@@ -61,7 +64,13 @@ func NewAgent(port int, nodeName, operatorAddr string, log logr.Logger) *Agent {
 		log:            log,
 		dedupeCache:    make(map[string]time.Time),
 		dedupeDuration: 2 * time.Second, // Deduplica locale veloce (2s)
+		enableRawWoL:   true,            // Enable raw Ethernet WoL by default
 	}
+}
+
+// SetEnableRawWoL enables or disables the raw Ethernet WoL listener
+func (a *Agent) SetEnableRawWoL(enable bool) {
+	a.enableRawWoL = enable
 }
 
 // Start avvia l'agente
@@ -118,6 +127,17 @@ func (a *Agent) Start(ctx context.Context) error {
 		"port", a.port,
 		"operatorAddr", a.operatorAddr)
 
+	// Start raw Ethernet WoL listener (Layer 2) if enabled
+	if a.enableRawWoL {
+		a.log.Info("Raw Ethernet WoL listener enabled, attempting to start...")
+		if err := a.startRawListener(ctx); err != nil {
+			a.log.Error(err, "Failed to start raw Ethernet WoL listener (continuing with UDP only)")
+			a.log.Info("Raw WoL requires NET_RAW capability - check SecurityContext")
+		} else {
+			a.log.Info("Raw Ethernet WoL listener started - can now receive classic WoL packets")
+		}
+	}
+
 	// Start health check server
 	go a.startHealthServer(ctx)
 
@@ -136,7 +156,11 @@ func (a *Agent) configureSocket() error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			a.log.Error(err, "Failed to close file descriptor")
+		}
+	}()
 
 	fd := int(file.Fd())
 
@@ -160,6 +184,14 @@ func (a *Agent) configureSocket() error {
 	}
 	a.log.Info("SO_BROADCAST enabled")
 
+	// Enable IP_PKTINFO to receive broadcast packets sent to 255.255.255.255
+	// This is crucial for receiving global broadcast packets
+	if err := syscall.SetsockoptInt(fd, unix.IPPROTO_IP, unix.IP_PKTINFO, 1); err != nil {
+		a.log.Error(err, "Failed to enable IP_PKTINFO (continuing anyway)")
+	} else {
+		a.log.Info("IP_PKTINFO enabled - can now receive global broadcast (255.255.255.255)")
+	}
+
 	// Set larger read buffer
 	if err := a.conn.SetReadBuffer(1024 * 64); err != nil {
 		a.log.Error(err, "Failed to set read buffer size")
@@ -181,7 +213,9 @@ func (a *Agent) listen(ctx context.Context) {
 			return
 		default:
 			// Set read deadline per permettere check periodici del context
-			a.conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+			if err := a.conn.SetReadDeadline(time.Now().Add(1 * time.Second)); err != nil {
+				a.log.Error(err, "Failed to set read deadline")
+			}
 
 			n, addr, err := a.conn.ReadFromUDP(buffer)
 			if err != nil {
@@ -271,7 +305,12 @@ func (a *Agent) shouldProcess(mac string) bool {
 	defer a.dedupeLock.Unlock()
 
 	if lastSeen, exists := a.dedupeCache[mac]; exists {
-		if time.Since(lastSeen) < a.dedupeDuration {
+		elapsed := time.Since(lastSeen)
+		if elapsed < a.dedupeDuration {
+			a.log.V(1).Info("Skipping duplicate MAC (dedupe)",
+				"mac", mac,
+				"lastSeenAgo", elapsed.String(),
+				"dedupeWindow", a.dedupeDuration.String())
 			return false
 		}
 	}
@@ -303,21 +342,106 @@ func (a *Agent) cleanupCache(ctx context.Context) {
 	}
 }
 
+// startRawListener starts raw Ethernet WoL listeners on all suitable interfaces.
+func (a *Agent) startRawListener(ctx context.Context) error {
+	a.log.Info("Starting Raw Ethernet WoL listeners (multi-interface mode)")
+
+	// 1️⃣ Trova tutte le interfacce candidate
+	interfaces, err := GetCandidateInterfaces(a.log)
+	if err != nil {
+		return fmt.Errorf("failed to detect network interfaces: %w", err)
+	}
+	if len(interfaces) == 0 {
+		return fmt.Errorf("no suitable network interfaces found for WoL listening")
+	}
+
+	// 2️⃣ Packet handler (riusa processPacket)
+	packetHandler := func(mac string, srcMAC net.HardwareAddr) {
+		addr := &net.UDPAddr{IP: net.IPv4bcast, Port: 0}
+
+		packet := make([]byte, MagicPacketSize)
+		for i := 0; i < 6; i++ {
+			packet[i] = 0xFF
+		}
+		macBytes, _ := net.ParseMAC(mac)
+		for i := 0; i < 16; i++ {
+			copy(packet[6+i*6:6+(i+1)*6], macBytes)
+		}
+
+		a.log.V(7).Info("Raw Ethernet WoL packet forwarded to processing",
+			"targetMAC", mac,
+			"sourceMAC", srcMAC.String())
+
+		// Usa la logica esistente per gestire l'evento
+		go a.processPacket(ctx, packet, addr)
+	}
+
+	// 3️⃣ Avvia un listener per ciascuna interfaccia
+	var started []string
+	a.rawListeners = nil // slice dei listener per stop futuro
+
+	for _, iface := range interfaces {
+		name := iface.Name
+		listener := NewRawListenerWithOptions(
+			name,
+			packetHandler,
+			a.log.WithValues("iface", name),
+			RawListenerOptions{
+				Promiscuous:    true, // cattura tutto il broadcast
+				AttachBPF:      true, // TEMP DISABLED FOR DEBUG
+				RecvTimeoutSec: 1,
+			},
+		)
+
+		if err := listener.Start(ctx); err != nil {
+			a.log.Error(err, "Failed to start WoL listener", "iface", name)
+			continue
+		}
+
+		a.rawListeners = append(a.rawListeners, listener)
+		started = append(started, name)
+	}
+
+	// 4️⃣ Log riassuntivo
+	if len(started) == 0 {
+		return fmt.Errorf("no WoL listeners started successfully")
+	}
+
+	a.log.Info("Raw Ethernet WoL listeners started",
+		"count", len(started),
+		"interfaces", strings.Join(started, ", "))
+
+	return nil
+}
+
 // Stop ferma l'agente
 func (a *Agent) Stop() {
 	a.log.Info("Stopping WOL Agent...")
 
 	if a.conn != nil {
-		a.conn.Close()
+		if err := a.conn.Close(); err != nil {
+			a.log.Error(err, "Failed to close UDP connection")
+		}
 		a.log.Info("UDP listener stopped")
 	}
 
+	a.stopRawListeners()
+
 	if a.grpcConn != nil {
-		a.grpcConn.Close()
+		if err := a.grpcConn.Close(); err != nil {
+			a.log.Error(err, "Failed to close gRPC connection")
+		}
 		a.log.Info("gRPC connection closed")
 	}
 
 	a.log.Info("WOL Agent stopped successfully")
+}
+
+func (a *Agent) stopRawListeners() {
+	for _, l := range a.rawListeners {
+		l.Stop()
+	}
+	a.log.Info("All raw listeners stopped")
 }
 
 // startHealthServer starts HTTP server for health checks and metrics
@@ -329,11 +453,15 @@ func (a *Agent) startHealthServer(ctx context.Context) {
 		// Check if gRPC connection is healthy
 		if a.grpcConn == nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte("gRPC connection not established"))
+			if _, err := w.Write([]byte("gRPC connection not established")); err != nil {
+				a.log.Error(err, "Failed to write health check response")
+			}
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		if _, err := w.Write([]byte("ok")); err != nil {
+			a.log.Error(err, "Failed to write health check response")
+		}
 	})
 
 	// Readiness check endpoint
@@ -341,17 +469,23 @@ func (a *Agent) startHealthServer(ctx context.Context) {
 		// Check if UDP listener is active
 		if a.conn == nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte("UDP listener not active"))
+			if _, err := w.Write([]byte("UDP listener not active")); err != nil {
+				a.log.Error(err, "Failed to write readiness check response")
+			}
 			return
 		}
 		// Check gRPC connection
 		if a.grpcConn == nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte("gRPC connection not established"))
+			if _, err := w.Write([]byte("gRPC connection not established")); err != nil {
+				a.log.Error(err, "Failed to write readiness check response")
+			}
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ready"))
+		if _, err := w.Write([]byte("ready")); err != nil {
+			a.log.Error(err, "Failed to write readiness check response")
+		}
 	})
 
 	// Metrics endpoint (basic Prometheus format)
@@ -361,13 +495,25 @@ func (a *Agent) startHealthServer(ctx context.Context) {
 		a.dedupeLock.RUnlock()
 
 		w.Header().Set("Content-Type", "text/plain")
-		fmt.Fprintf(w, "# HELP wol_agent_dedupe_cache_size Number of entries in deduplication cache\n")
-		fmt.Fprintf(w, "# TYPE wol_agent_dedupe_cache_size gauge\n")
-		fmt.Fprintf(w, "wol_agent_dedupe_cache_size{node=\"%s\"} %d\n", a.nodeName, cacheSize)
-		fmt.Fprintf(w, "# HELP wol_agent_info Agent information\n")
-		fmt.Fprintf(w, "# TYPE wol_agent_info gauge\n")
-		fmt.Fprintf(w, "wol_agent_info{node=\"%s\",port=\"%d\",operator=\"%s\"} 1\n",
-			a.nodeName, a.port, a.operatorAddr)
+		if _, err := fmt.Fprintf(w, "# HELP wol_agent_dedupe_cache_size Number of entries in deduplication cache\n"); err != nil {
+			a.log.Error(err, "Failed to write metrics")
+		}
+		if _, err := fmt.Fprintf(w, "# TYPE wol_agent_dedupe_cache_size gauge\n"); err != nil {
+			a.log.Error(err, "Failed to write metrics")
+		}
+		if _, err := fmt.Fprintf(w, "wol_agent_dedupe_cache_size{node=\"%s\"} %d\n", a.nodeName, cacheSize); err != nil {
+			a.log.Error(err, "Failed to write metrics")
+		}
+		if _, err := fmt.Fprintf(w, "# HELP wol_agent_info Agent information\n"); err != nil {
+			a.log.Error(err, "Failed to write metrics")
+		}
+		if _, err := fmt.Fprintf(w, "# TYPE wol_agent_info gauge\n"); err != nil {
+			a.log.Error(err, "Failed to write metrics")
+		}
+		if _, err := fmt.Fprintf(w, "wol_agent_info{node=\"%s\",port=\"%d\",operator=\"%s\"} 1\n",
+			a.nodeName, a.port, a.operatorAddr); err != nil {
+			a.log.Error(err, "Failed to write metrics")
+		}
 	})
 
 	server := &http.Server{
@@ -381,7 +527,9 @@ func (a *Agent) startHealthServer(ctx context.Context) {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		server.Shutdown(shutdownCtx)
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			a.log.Error(err, "Failed to shutdown health check server")
+		}
 	}()
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

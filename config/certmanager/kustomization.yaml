@@ -1,0 +1,6 @@
+resources:
+- certificate-metrics.yaml
+- certificate-webhook.yaml
+- issuer.yaml
+# +kubebuilder:scaffold:certmanagerpatch
+

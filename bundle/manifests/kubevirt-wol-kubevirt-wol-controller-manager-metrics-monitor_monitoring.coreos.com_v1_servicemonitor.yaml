@@ -1,0 +1,23 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: kubevirt-wol
+    control-plane: controller-manager
+  name: kubevirt-wol-kubevirt-wol-controller-manager-metrics-monitor
+spec:
+  endpoints:
+  - bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+    path: /metrics
+    port: metrics
+    scheme: https
+    tlsConfig:
+      ca:
+        secret:
+          key: ca.crt
+          name: metrics-server-cert
+      serverName: metrics-service.kubevirt-wol-system.svc
+  selector:
+    matchLabels:
+      control-plane: controller-manager

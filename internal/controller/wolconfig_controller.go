@@ -50,10 +50,11 @@ const (
 // WolConfigReconciler reconciles a WolConfig object
 type WolConfigReconciler struct {
 	client.Client
-	Scheme    *runtime.Scheme
-	Mapper    *wol.MACMapper
-	Listener  *wol.Listener
-	VMStarter *wol.VMStarter
+	Scheme            *runtime.Scheme
+	Mapper            *wol.MACMapper
+	VMStarter         *wol.VMStarter
+	AgentImage        string // Agent image to use for DaemonSets (from AGENT_IMAGE env var)
+	OperatorNamespace string // Namespace where operator is running (from POD_NAMESPACE env var)
 }
 
 // +kubebuilder:rbac:groups=wol.pillon.org,resources=wolconfigs,verbs=get;list;watch;create;update;patch;delete
@@ -63,40 +64,46 @@ type WolConfigReconciler struct {
 // +kubebuilder:rbac:groups=subresources.kubevirt.io,resources=virtualmachines/start,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=daemonsets/status,verbs=get
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
 // Reconcile handles WolConfig reconciliation
 func (r *WolConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
 	// Fetch the WolConfig instance
 	config := &wolv1beta1.WolConfig{}
 	if err := r.Get(ctx, req.NamespacedName, config); err != nil {
 		if errors.IsNotFound(err) {
 			// Config deleted, nothing to do
-			log.Info("WolConfig deleted")
+			logger.Info("WolConfig deleted")
 			return ctrl.Result{}, nil
 		}
-		log.Error(err, "Failed to get WolConfig")
+		logger.Error(err, "Failed to get WolConfig")
 		return ctrl.Result{}, err
 	}
 
-	log.Info("Reconciling WolConfig",
+	logger.Info("Reconciling WolConfig",
 		"name", config.Name,
 		"discoveryMode", config.Spec.DiscoveryMode,
 		"wolPorts", config.Spec.WOLPorts)
 
 	// Validate configuration
 	if err := r.validateConfig(config); err != nil {
-		log.Error(err, "Invalid configuration")
-		r.updateStatus(ctx, config, false, ReasonInvalidConfig, err.Error())
+		logger.Error(err, "Invalid configuration")
+		if statusErr := r.updateStatus(ctx, config, false, ReasonInvalidConfig, err.Error()); statusErr != nil {
+			logger.Error(statusErr, "Failed to update status")
+		}
 		return ctrl.Result{}, err
 	}
 
 	// Reconcile agent DaemonSet
 	if err := r.reconcileAgentDaemonSet(ctx, config); err != nil {
-		log.Error(err, "Failed to reconcile agent DaemonSet")
-		r.updateStatus(ctx, config, false, ReasonAgentFailed, fmt.Sprintf("Failed to reconcile DaemonSet: %v", err))
+		logger.Error(err, "Failed to reconcile agent DaemonSet")
+		if statusErr := r.updateStatus(ctx, config, false, ReasonAgentFailed, fmt.Sprintf("Failed to reconcile DaemonSet: %v", err)); statusErr != nil {
+			logger.Error(statusErr, "Failed to update status")
+		}
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, err
 	}
 
@@ -104,8 +111,10 @@ func (r *WolConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// This ensures multiple configs work in OR mode, not AND
 	managedVMs, err := r.refreshAllConfigs(ctx)
 	if err != nil {
-		log.Error(err, "Failed to refresh VM mapping from all configs")
-		r.updateStatus(ctx, config, false, ReasonInvalidConfig, fmt.Sprintf("Failed to refresh mapping: %v", err))
+		logger.Error(err, "Failed to refresh VM mapping from all configs")
+		if statusErr := r.updateStatus(ctx, config, false, ReasonInvalidConfig, fmt.Sprintf("Failed to refresh mapping: %v", err)); statusErr != nil {
+			logger.Error(statusErr, "Failed to update status")
+		}
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, err
 	}
 
@@ -116,16 +125,16 @@ func (r *WolConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Update agent status from DaemonSet
 	if err := r.updateAgentStatus(ctx, config); err != nil {
-		log.Error(err, "Failed to update agent status")
+		logger.Error(err, "Failed to update agent status")
 		// Non fatal, continua
 	}
 
 	if err := r.updateStatus(ctx, config, true, ReasonMappingUpdated, "VM mapping refreshed successfully"); err != nil {
-		log.Error(err, "Failed to update status")
+		logger.Error(err, "Failed to update status")
 		return ctrl.Result{}, err
 	}
 
-	log.Info("Successfully reconciled WolConfig",
+	logger.Info("Successfully reconciled WolConfig",
 		"managedVMs", config.Status.ManagedVMs,
 		"lastSync", config.Status.LastSync)
 
@@ -215,7 +224,8 @@ func (r *WolConfigReconciler) updateStatus(ctx context.Context, config *wolv1bet
 func (r *WolConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Watch for changes to WolConfig
 	builder := ctrl.NewControllerManagedBy(mgr).
-		For(&wolv1beta1.WolConfig{})
+		For(&wolv1beta1.WolConfig{}).
+		Named("wol-wolconfig")
 
 	// Watch VirtualMachines to trigger reconciliation when VMs change
 	builder = builder.Watches(

@@ -30,10 +30,15 @@ import (
 func (r *WolConfigReconciler) updateAgentStatus(ctx context.Context, wolConfig *wolv1beta1.WolConfig) error {
 	daemonSetName := getDaemonSetName(wolConfig)
 
+	namespace := r.OperatorNamespace
+	if namespace == "" {
+		namespace = DefaultOperatorNamespace
+	}
+
 	ds := &appsv1.DaemonSet{}
 	err := r.Get(ctx, types.NamespacedName{
 		Name:      daemonSetName,
-		Namespace: AgentNamespace,
+		Namespace: namespace,
 	}, ds)
 
 	if err != nil {

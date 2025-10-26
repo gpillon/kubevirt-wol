@@ -1,0 +1,20 @@
+# This patch enables TLS configuration for the ServiceMonitor to scrape metrics
+# from the manager pod when cert-manager certificates are used.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kubevirt-wol-controller-manager-metrics-monitor
+  namespace: kubevirt-wol-system
+spec:
+  endpoints:
+  - bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+    path: /metrics
+    port: metrics
+    scheme: https
+    tlsConfig:
+      ca:
+        secret:
+          name: metrics-server-cert
+          key: ca.crt
+      serverName: metrics-service.kubevirt-wol-system.svc
+

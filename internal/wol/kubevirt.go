@@ -33,9 +33,9 @@ type VMStarter struct {
 }
 
 // NewVMStarter creates a new VM starter
-func NewVMStarter(client client.Client, log logr.Logger) *VMStarter {
+func NewVMStarter(k8sClient client.Client, log logr.Logger) *VMStarter {
 	return &VMStarter{
-		client: client,
+		client: k8sClient,
 		log:    log,
 	}
 }

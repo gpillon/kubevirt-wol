@@ -1,5 +1,6 @@
 # Agent resources are now managed by the controller
-# This directory contains only the service for gRPC communication
+# This directory contains only the gRPC Service
+# ServiceAccount is in config/rbac/agent_serviceaccount.yaml
 
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -11,4 +12,4 @@ resources:
 images:
 - name: agent
   newName: quay.io/kubevirtwol/kubevirt-wol-agent
-  newTag: 20251024-160030
+  newTag: development

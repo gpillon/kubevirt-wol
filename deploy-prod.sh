@@ -37,6 +37,7 @@ echo ""
 
 # Step 4: Verifica SCC
 echo "[4/5] Verifica SCC per agent..."
+oc apply -k config/openshift
 echo "SCC kubevirt-wol-scc configurato nei manifest ✅"
 echo ""
 

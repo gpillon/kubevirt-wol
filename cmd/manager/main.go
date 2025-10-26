@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -33,6 +34,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	kubevirtv1 "kubevirt.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -66,6 +68,8 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
+	var metricsCertPath, metricsCertName, metricsCertKey string
+	var webhookCertPath, webhookCertName, webhookCertKey string
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -76,6 +80,18 @@ func main() {
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.StringVar(&webhookCertPath, "webhook-cert-path", "",
+		"The directory that contains the webhook certificate.")
+	flag.StringVar(&webhookCertName, "webhook-cert-name", "tls.crt",
+		"The name of the webhook certificate file.")
+	flag.StringVar(&webhookCertKey, "webhook-cert-key", "tls.key",
+		"The name of the webhook key file.")
+	flag.StringVar(&metricsCertPath, "metrics-cert-path", "",
+		"The directory that contains the metrics server certificate.")
+	flag.StringVar(&metricsCertName, "metrics-cert-name", "tls.crt",
+		"The name of the metrics server certificate file.")
+	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key",
+		"The name of the metrics server key file.")
 	opts := zap.Options{
 		Development: false,
 	}
@@ -99,8 +115,30 @@ func main() {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
 
+	var metricsCertWatcher, webhookCertWatcher *certwatcher.CertWatcher
+	webhookTLSOpts := tlsOpts
+
+	if len(webhookCertPath) > 0 {
+		setupLog.Info("Initializing webhook certificate watcher using provided certificates",
+			"webhook-cert-path", webhookCertPath, "webhook-cert-name", webhookCertName, "webhook-cert-key", webhookCertKey)
+
+		var err error
+		webhookCertWatcher, err = certwatcher.New(
+			filepath.Join(webhookCertPath, webhookCertName),
+			filepath.Join(webhookCertPath, webhookCertKey),
+		)
+		if err != nil {
+			setupLog.Error(err, "Failed to initialize webhook certificate watcher")
+			os.Exit(1)
+		}
+
+		webhookTLSOpts = append(webhookTLSOpts, func(config *tls.Config) {
+			config.GetCertificate = webhookCertWatcher.GetCertificate
+		})
+	}
+
 	webhookServer := webhook.NewServer(webhook.Options{
-		TLSOpts: tlsOpts,
+		TLSOpts: webhookTLSOpts,
 	})
 
 	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
@@ -125,6 +163,25 @@ func main() {
 		// can access the metrics endpoint. The RBAC are configured in 'config/rbac/kustomization.yaml'. More info:
 		// https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.19.0/pkg/metrics/filters#WithAuthenticationAndAuthorization
 		metricsServerOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
+	}
+
+	if len(metricsCertPath) > 0 {
+		setupLog.Info("Initializing metrics certificate watcher using provided certificates",
+			"metrics-cert-path", metricsCertPath, "metrics-cert-name", metricsCertName, "metrics-cert-key", metricsCertKey)
+
+		var err error
+		metricsCertWatcher, err = certwatcher.New(
+			filepath.Join(metricsCertPath, metricsCertName),
+			filepath.Join(metricsCertPath, metricsCertKey),
+		)
+		if err != nil {
+			setupLog.Error(err, "Failed to initialize metrics certificate watcher")
+			os.Exit(1)
+		}
+
+		metricsServerOptions.TLSOpts = append(metricsServerOptions.TLSOpts, func(config *tls.Config) {
+			config.GetCertificate = metricsCertWatcher.GetCertificate
+		})
 	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
@@ -154,6 +211,23 @@ func main() {
 	// Initialize WOL components
 	setupLog.Info("initializing WOL components (aggregator mode with gRPC)")
 
+	// Get agent image from environment variable (set during deployment)
+	// This ensures agents use the same version as the manager
+	agentImage := os.Getenv("AGENT_IMAGE")
+	if agentImage == "" {
+		setupLog.Info("AGENT_IMAGE not set, will use default or user-specified image")
+	} else {
+		setupLog.Info("Using agent image from environment", "image", agentImage)
+	}
+
+	// Get operator namespace from environment variable (set via downward API)
+	operatorNamespace := os.Getenv("POD_NAMESPACE")
+	if operatorNamespace == "" {
+		setupLog.Info("POD_NAMESPACE not set, will use default namespace")
+	} else {
+		setupLog.Info("Using operator namespace from environment", "namespace", operatorNamespace)
+	}
+
 	// Create MAC mapper
 	mapper := wol.NewMACMapper(mgr.GetClient(), ctrl.Log.WithName("mapper"))
 
@@ -163,18 +237,52 @@ func main() {
 	// Create WOL aggregator (gRPC server)
 	aggregator := wol.NewAggregator(mapper, vmStarter, ctrl.Log.WithName("aggregator"))
 
-	// Setup controller with WOL components (no Listener needed, using Aggregator)
+	// Setup controller with WOL components (using Aggregator for gRPC)
 	if err = (&controller.WolConfigReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		Mapper:    mapper,
-		Listener:  nil, // No longer using direct UDP listener
-		VMStarter: vmStarter,
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		Mapper:            mapper,
+		VMStarter:         vmStarter,
+		AgentImage:        agentImage,        // Pass agent image from environment
+		OperatorNamespace: operatorNamespace, // Pass operator namespace from environment
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "WolConfig")
 		os.Exit(1)
 	}
+
+	// Add startup reconciler to check and update DaemonSets if image doesn't match
+	if agentImage != "" {
+		startupReconciler := &controller.StartupReconciler{
+			Client:            mgr.GetClient(),
+			AgentImage:        agentImage,
+			OperatorNamespace: operatorNamespace,
+			Log:               ctrl.Log.WithName("startup-reconciler"),
+		}
+		if err := mgr.Add(startupReconciler); err != nil {
+			setupLog.Error(err, "unable to add startup reconciler")
+			os.Exit(1)
+		}
+		setupLog.Info("Startup reconciler added - will check DaemonSet images at startup")
+	} else {
+		setupLog.Info("AGENT_IMAGE not set - skipping DaemonSet image drift detection at startup")
+	}
 	// +kubebuilder:scaffold:builder
+
+	if metricsCertWatcher != nil {
+		setupLog.Info("Adding metrics certificate watcher to manager")
+		if err := mgr.Add(metricsCertWatcher); err != nil {
+			setupLog.Error(err, "Unable to add metrics certificate watcher to manager")
+			os.Exit(1)
+		}
+	}
+
+	if webhookCertWatcher != nil {
+		setupLog.Info("Adding webhook certificate watcher to manager")
+		if err := mgr.Add(webhookCertWatcher); err != nil {
+			setupLog.Error(err, "Unable to add webhook certificate watcher to manager")
+			os.Exit(1)
+		}
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")

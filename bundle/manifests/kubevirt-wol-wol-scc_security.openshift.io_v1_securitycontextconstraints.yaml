@@ -1,0 +1,58 @@
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: kubevirt-wol-wol-scc
+  labels:
+    app.kubernetes.io/name: kubevirt-wol
+    app.kubernetes.io/component: agent
+    app.kubernetes.io/part-of: kubevirt-wol
+  annotations:
+    kubernetes.io/description: "SCC for KubeVirt WOL Operator. Allows hostNetwork to receive broadcast UDP packets."
+    include.release.openshift.io/self-managed-high-availability: "true"
+    include.release.openshift.io/single-node-developer: "true"
+  creationTimestamp: null
+# Allow host network for receiving broadcast UDP packets
+allowHostNetwork: true
+allowHostPorts: true
+# Port range for WOL (default 9, but allow some flexibility)
+allowHostDirVolumePlugin: false
+allowHostIPC: false
+allowHostPID: false
+allowPrivilegeEscalation: true
+allowPrivilegedContainer: true
+# Allow any UID including root for privileged port binding
+runAsUser:
+  type: RunAsAny
+# SELinux - use RunAsAny for more flexibility with capabilities
+seLinuxContext:
+  type: RunAsAny
+# Supplemental groups
+supplementalGroups:
+  type: RunAsAny
+# FSGroup
+fsGroup:
+  type: RunAsAny
+# Volumes
+volumes:
+  - configMap
+  - downwardAPI
+  - emptyDir
+  - persistentVolumeClaim
+  - projected
+  - secret
+# Capabilities
+# NET_BIND_SERVICE is required to bind to UDP port 9 (privileged port < 1024)
+# NET_RAW is required for raw Ethernet socket (Layer 2 WoL packets)
+allowedCapabilities:
+  - NET_BIND_SERVICE
+  - NET_RAW
+defaultAddCapabilities: []
+requiredDropCapabilities:
+  - ALL
+# Priority
+priority: 10
+# Read-only root filesystem
+readOnlyRootFilesystem: false
+# Users and groups that can use this SCC
+users: []
+groups: []

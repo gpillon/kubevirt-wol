@@ -45,7 +45,7 @@ type dedupeEntry struct {
 	lastResponse *wolv1.WOLEventResponse
 }
 
-// NewAggregator crea un nuovo aggregatore
+// NewAggregator creates a new aggregator
 func NewAggregator(mapper *MACMapper, vmStarter *VMStarter, log logr.Logger) *Aggregator {
 	return &Aggregator{
 		mapper:         mapper,
@@ -176,7 +176,7 @@ func (a *Aggregator) HealthCheck(ctx context.Context, req *wolv1.HealthCheckRequ
 	status := wolv1.HealthCheckResponse_SERVING
 	if mappingCount == 0 {
 		a.log.V(1).Info("Health check: no VM mappings configured")
-		// Comunque SERVING, solo non ci sono VM configurate ancora
+		// Still SERVING, just no VMs configured yet
 	}
 
 	return &wolv1.HealthCheckResponse{

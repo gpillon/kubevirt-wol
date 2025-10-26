@@ -41,8 +41,11 @@ func main() {
 	var operatorAddr string
 	var portsStr string
 
-	flag.StringVar(&nodeName, "node-name", os.Getenv("NODE_NAME"), "Kubernetes node name (from downward API or env)")
-	flag.StringVar(&operatorAddr, "operator-address", "kubevirt-wol-grpc.kubevirt-wol-system.svc.cluster.local:9090", "Operator gRPC address")
+	flag.StringVar(&nodeName, "node-name", os.Getenv("NODE_NAME"),
+		"Kubernetes node name (from downward API or env)")
+	flag.StringVar(&operatorAddr, "operator-address",
+		"kubevirt-wol-grpc.kubevirt-wol-system.svc.cluster.local:9090",
+		"Operator gRPC address")
 	flag.StringVar(&portsStr, "ports", "9", "UDP ports for WOL packets (comma-separated)")
 
 	opts := zap.Options{

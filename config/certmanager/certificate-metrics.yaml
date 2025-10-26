@@ -1,0 +1,22 @@
+# The following manifests contain a self-signed issuer CR and a certificate CR.
+# More document can be found at https://docs.cert-manager.io
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  labels:
+    app.kubernetes.io/name: kubevirt-wol
+    app.kubernetes.io/managed-by: kustomize
+  name: metrics-server-cert
+  namespace: system
+spec:
+  dnsNames:
+  - metrics-service.system.svc
+  - metrics-service.system.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: ca-issuer
+  secretName: metrics-server-cert
+  subject:
+    organizationalUnits:
+    - kubevirt-wol
+

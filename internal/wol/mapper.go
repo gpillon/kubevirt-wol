@@ -50,9 +50,9 @@ type MACMapper struct {
 }
 
 // NewMACMapper creates a new MAC to VM mapper
-func NewMACMapper(client client.Client, log logr.Logger) *MACMapper {
+func NewMACMapper(k8sClient client.Client, log logr.Logger) *MACMapper {
 	return &MACMapper{
-		client:   client,
+		client:   k8sClient,
 		log:      log,
 		mapping:  make(map[string]VMInfo),
 		cacheTTL: 300 * time.Second, // default 5 minutes

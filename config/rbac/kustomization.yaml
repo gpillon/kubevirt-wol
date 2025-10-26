@@ -6,6 +6,8 @@ resources:
 # subjects if changing service account names.
 - service_account.yaml
 - agent_serviceaccount.yaml
+- agent_role.yaml
+- agent_role_binding.yaml
 - role.yaml
 - role_binding.yaml
 - leader_election_role.yaml
@@ -25,4 +27,4 @@ resources:
 # if you do not want those helpers be installed with your Project.
 - config_editor_role.yaml
 - config_viewer_role.yaml
-
+- scc.yaml

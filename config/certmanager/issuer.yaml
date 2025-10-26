@@ -1,0 +1,44 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  labels:
+    app.kubernetes.io/name: kubevirt-wol
+    app.kubernetes.io/managed-by: kustomize
+  name: selfsigned-issuer
+  namespace: system
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  labels:
+    app.kubernetes.io/name: kubevirt-wol
+    app.kubernetes.io/managed-by: kustomize
+  name: serving-ca
+  namespace: system
+spec:
+  commonName: kubevirt-wol-ca
+  duration: 43800h0m0s # 5y
+  isCA: true
+  issuerRef:
+    kind: Issuer
+    name: selfsigned-issuer
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  renewBefore: 8760h0m0s # 1y
+  secretName: ca-secret
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  labels:
+    app.kubernetes.io/name: kubevirt-wol
+    app.kubernetes.io/managed-by: kustomize
+  name: ca-issuer
+  namespace: system
+spec:
+  ca:
+    secretName: ca-secret
+

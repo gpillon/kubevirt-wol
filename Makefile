@@ -29,11 +29,15 @@ BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
 #
 # For example, running 'make bundle-build bundle-push catalog-build catalog-push' will build and push both
 # pillon.org/kubevirt-wol-bundle:$VERSION and pillon.org/kubevirt-wol-catalog:$VERSION.
-IMAGE_TAG_BASE ?= pillon.org/kubevirt-wol
+IMAGE_TAG_BASE ?= kubevirtwol/kubevirt-wol
 
 # BUNDLE_IMG defines the image:tag used for the bundle.
 # You can use it as an arg. (E.g make bundle-build BUNDLE_IMG=<some-registry>/<project-name-bundle>:<tag>)
 BUNDLE_IMG ?= $(IMAGE_TAG_BASE)-bundle:v$(VERSION)
+
+# IS_OPENSHIFT defines if the bundle should be generated for OpenShift
+# When true, uses config/openshift for kustomize manifests
+IS_OPENSHIFT ?= true
 
 # BUNDLE_GEN_FLAGS are the flags passed to the operator-sdk generate bundle command
 BUNDLE_GEN_FLAGS ?= -q --overwrite --version $(VERSION) $(BUNDLE_METADATA_OPTS)
@@ -48,11 +52,13 @@ endif
 
 # Set the Operator SDK version to use. By default, what is installed on the system is used.
 # This is useful for CI or a project to utilize a specific version of the operator-sdk toolkit.
-OPERATOR_SDK_VERSION ?= v1.39.1
+OPERATOR_SDK_VERSION ?= v1.41.1
 # Image URL to use all building/pushing image targets
-IMG ?= controller:latest
+IMG ?= quay.io/kubevirtwol/kubevirt-wol-manager:latest
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
-ENVTEST_K8S_VERSION = 1.31.0
+# Automatically derived from controller-runtime version in go.mod
+ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller-runtime | awk -F'[v.]' '{printf "release-%d.%d", $$2, $$3}')
+ENVTEST_K8S_VERSION ?= $(shell go list -m -f "{{ .Version }}" k8s.io/api | awk -F'[v.]' '{printf "1.%d", $$3}')
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -121,14 +127,39 @@ fmt: ## Run go fmt against code.
 vet: ## Run go vet against code.
 	go vet ./...
 
+.PHONY: setup-envtest
+setup-envtest: envtest ## Setup ENVTEST binaries
+	@$(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path || { \
+	  echo "Error setting up envtest"; exit 1; }
+
 .PHONY: test
-test: manifests generate fmt vet envtest ## Run tests.
+test: manifests generate fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 # Utilize Kind or modify the e2e tests to load the image locally, enabling compatibility with other vendors.
+KIND_CLUSTER ?= kubevirt-wol-test-e2e
+
+.PHONY: setup-test-e2e
+setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
+	@command -v kind >/dev/null 2>&1 || { \
+	  echo "Kind is not installed. Please install Kind manually."; \
+	  exit 1; \
+	}
+	@case "$$(kind get clusters)" in \
+	  *"$(KIND_CLUSTER)"*) \
+	    echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
+	  *) \
+	    echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
+	    kind create cluster --name $(KIND_CLUSTER) ;; \
+	esac
+
+.PHONY: cleanup-test-e2e
+cleanup-test-e2e: ## Clean up the Kind cluster for e2e tests
+	kind delete cluster --name $(KIND_CLUSTER)
+
 .PHONY: test-e2e  # Run the e2e tests against a Kind k8s instance that is spun up.
-test-e2e:
-	go test ./test/e2e/ -v -ginkgo.v
+test-e2e: setup-test-e2e
+	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -137,6 +168,10 @@ lint: golangci-lint ## Run golangci-lint linter
 .PHONY: lint-fix
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 	$(GOLANGCI_LINT) run --fix
+
+.PHONY: lint-config
+lint-config: golangci-lint ## Verify golangci-lint linter configuration
+	$(GOLANGCI_LINT) config verify
 
 ##@ Build
 
@@ -176,7 +211,7 @@ docker-build-manager: ## Build docker image for manager.
 
 .PHONY: docker-build-agent
 docker-build-agent: ## Build docker image for agent.
-	$(eval AGENT_IMG ?= $(shell echo ${IMG} | sed 's/manager/agent/g' | sed 's/:/-agent:/g'))
+	$(eval AGENT_IMG ?= $(shell echo ${IMG} | sed 's/manager/agent/g'))
 	$(CONTAINER_TOOL) build --build-arg BINARY=agent -t ${AGENT_IMG} .
 
 .PHONY: docker-build-all
@@ -191,7 +226,7 @@ docker-push-manager: ## Push manager docker image.
 
 .PHONY: docker-push-agent
 docker-push-agent: ## Push agent docker image.
-	$(eval AGENT_IMG ?= $(shell echo ${IMG} | sed 's/manager/agent/g' | sed 's/:/-agent:/g'))
+	$(eval AGENT_IMG ?= $(shell echo ${IMG} | sed 's/manager/agent/g'))
 	$(CONTAINER_TOOL) push ${AGENT_IMG}
 
 .PHONY: docker-push-all
@@ -234,14 +269,27 @@ install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~
 uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/crd | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
+.PHONY: deploy-dry-run
+deploy-dry-run: manifests kustomize yq ## Generate final manifests without applying (dry-run). Use 'make -s' for clean YAML output.
+	$(eval AGENT_IMG ?= $(shell echo ${IMG} | sed 's/manager/agent/g'))
+	@cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+	@echo "# Manager Image: ${IMG}" >&2
+	@echo "# Agent Image:   $(AGENT_IMG)" >&2
+	@echo "---" >&2
+	@$(KUSTOMIZE) build config/default | \
+		$(YQ) eval '(select(.kind == "Deployment" and .metadata.name == "kubevirt-wol-controller-manager") | .spec.template.spec.containers[] | select(.name == "manager") | .env[] | select(.name == "AGENT_IMAGE") | .value) = "$(AGENT_IMG)"' -
+
 .PHONY: deploy
-deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+deploy: manifests kustomize yq ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+	$(eval AGENT_IMG ?= $(shell echo ${IMG} | sed 's/manager/agent/g'))
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
-	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
+	$(KUSTOMIZE) build config/default | \
+		$(YQ) eval '(select(.kind == "Deployment" and .metadata.name == "kubevirt-wol-controller-manager") | .spec.template.spec.containers[] | select(.name == "manager") | .env[] | select(.name == "AGENT_IMAGE") | .value) = "$(AGENT_IMG)"' - | \
+		$(KUBECTL) apply -f -
 
 .PHONY: deploy-agent
 deploy-agent: kustomize ## Deploy agent DaemonSet to the K8s cluster.
-	$(eval AGENT_IMG ?= $(shell echo ${IMG} | sed 's/manager/agent/g' | sed 's/:/-agent:/g'))
+	$(eval AGENT_IMG ?= $(shell echo ${IMG} | sed 's/manager/agent/g'))
 	cd config/agent && $(KUSTOMIZE) edit set image agent=${AGENT_IMG}
 	$(KUSTOMIZE) build config/agent | $(KUBECTL) apply -f -
 
@@ -249,13 +297,20 @@ deploy-agent: kustomize ## Deploy agent DaemonSet to the K8s cluster.
 deploy-all: deploy deploy-agent ## Deploy both manager and agent to the cluster.
 
 .PHONY: deploy-openshift
-deploy-openshift: manifests kustomize ## Deploy controller to OpenShift cluster with custom SCC.
+deploy-openshift: manifests kustomize yq ## Deploy controller to OpenShift cluster with custom SCC.
+	$(eval AGENT_IMG ?= $(shell echo ${IMG} | sed 's/manager/agent/g'))
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
-	$(KUSTOMIZE) build config/openshift | $(KUBECTL) apply -f -
+	$(KUSTOMIZE) build config/openshift | \
+		$(YQ) eval '(select(.kind == "Deployment" and .metadata.name == "kubevirt-wol-controller-manager") | .spec.template.spec.containers[] | select(.name == "manager") | .env[] | select(.name == "AGENT_IMAGE") | .value) = "$(AGENT_IMG)"' - | \
+		$(KUBECTL) apply -f -
 
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
+
+.PHONY: undeploy-openshift
+undeploy-openshift: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
+	$(KUSTOMIZE) build config/openshift | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
 ##@ Dependencies
 
@@ -270,12 +325,14 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+YQ ?= $(LOCALBIN)/yq
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.4.3
-CONTROLLER_TOOLS_VERSION ?= v0.16.1
-ENVTEST_VERSION ?= release-0.19
-GOLANGCI_LINT_VERSION ?= v1.59.1
+CONTROLLER_TOOLS_VERSION ?= v0.18.0
+ENVTEST_TOOL_VERSION ?= $(ENVTEST_VERSION)
+GOLANGCI_LINT_VERSION ?= v2.1.0
+YQ_VERSION ?= v4.44.3
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
@@ -290,12 +347,26 @@ $(CONTROLLER_GEN): $(LOCALBIN)
 .PHONY: envtest
 envtest: $(ENVTEST) ## Download setup-envtest locally if necessary.
 $(ENVTEST): $(LOCALBIN)
-	$(call go-install-tool,$(ENVTEST),sigs.k8s.io/controller-runtime/tools/setup-envtest,$(ENVTEST_VERSION))
+	$(call go-install-tool,$(ENVTEST),sigs.k8s.io/controller-runtime/tools/setup-envtest,$(ENVTEST_TOOL_VERSION))
 
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
-	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+
+.PHONY: yq
+yq: $(YQ) ## Download yq locally if necessary.
+$(YQ): $(LOCALBIN)
+	@[ -f "$(YQ)-$(YQ_VERSION)" ] || { \
+	set -e ;\
+	echo "Downloading yq $(YQ_VERSION)" ;\
+	mkdir -p $(LOCALBIN) ;\
+	OS=$$(go env GOOS) && ARCH=$$(go env GOARCH) ;\
+	curl -sSLo $(YQ) https://github.com/mikefarah/yq/releases/download/$(YQ_VERSION)/yq_$${OS}_$${ARCH} ;\
+	chmod +x $(YQ) ;\
+	mv $(YQ) $(YQ)-$(YQ_VERSION) ;\
+	}
+	@ln -sf $(YQ)-$(YQ_VERSION) $(YQ)
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
@@ -331,11 +402,21 @@ endif
 endif
 
 .PHONY: bundle
-bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metadata, then validate generated files.
+bundle: manifests kustomize operator-sdk yq ## Generate bundle manifests and metadata, then validate generated files.
+	$(eval AGENT_IMG ?= $(shell echo ${IMG} | sed 's/manager/agent/g'))
 	$(OPERATOR_SDK) generate kustomize manifests -q
 	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
-	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
-	$(OPERATOR_SDK) bundle validate ./bundle
+	$(KUSTOMIZE) build config/manifests | \
+		$(YQ) eval 'select(.kind != "SecurityContextConstraints")' - | \
+		$(YQ) eval '(select(.kind == "Deployment" and .metadata.name == "kubevirt-wol-controller-manager") | .spec.template.spec.containers[] | select(.name == "manager") | .env[] | select(.name == "AGENT_IMAGE") | .value) = "$(AGENT_IMG)"' - | \
+		$(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS) --extra-service-accounts kubevirt-wol-wol-agent
+	@echo "Temporarily removing SCC for validation (operator-sdk doesn't support OpenShift-specific resources)..."
+	@rm -f bundle/manifests/*securitycontextconstraints*.yaml 2>/dev/null || true
+	@echo "Validating bundle..."
+	@$(OPERATOR_SDK) bundle validate ./bundle
+	@echo "Adding SCC to bundle manifests..."
+	@$(YQ) eval '.metadata.creationTimestamp = null' config/manifests/scc.yaml > bundle/manifests/kubevirt-wol-wol-scc_security.openshift.io_v1_securitycontextconstraints.yaml
+	@echo "Bundle generation completed successfully"
 
 .PHONY: bundle-build
 bundle-build: ## Build the bundle image.
@@ -354,7 +435,7 @@ ifeq (,$(shell which opm 2>/dev/null))
 	set -e ;\
 	mkdir -p $(dir $(OPM)) ;\
 	OS=$(shell go env GOOS) && ARCH=$(shell go env GOARCH) && \
-	curl -sSLo $(OPM) https://github.com/operator-framework/operator-registry/releases/download/v1.23.0/$${OS}-$${ARCH}-opm ;\
+	curl -sSLo $(OPM) https://github.com/operator-framework/operator-registry/releases/download/v1.55.0/$${OS}-$${ARCH}-opm ;\
 	chmod +x $(OPM) ;\
 	}
 else

@@ -29,25 +29,128 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	wolv1beta1 "github.com/gpillon/kubevirt-wol/api/v1beta1"
 )
 
 const (
-	DefaultAgentImage       = "quay.io/kubevirtwol/kubevirt-wol-agent:v2-142900"
-	DefaultOperatorAddress  = "kubevirt-wol-kubevirt-wol-grpc.kubevirt-wol-system.svc:9090"
-	AgentNamespace          = "kubevirt-wol-system"
-	AgentServiceAccountName = "kubevirt-wol-wol-agent" // Must match the ServiceAccount created by kustomize (with namePrefix)
+	DefaultAgentImage          = "quay.io/kubevirtwol/kubevirt-wol-agent:latest"  // Fallback if AGENT_IMAGE env var not set
+	DefaultOperatorAddress     = "kubevirt-wol-grpc.kubevirt-wol-system.svc:9090" // Fallback if service not found
+	DefaultOperatorNamespace   = "kubevirt-wol-system"                            // Fallback if POD_NAMESPACE env var not set
+	DefaultAgentServiceAccount = "kubevirt-wol-wol-agent"                         // Fallback if ServiceAccount not found
 )
+
+// discoverAgentServiceAccount finds the agent ServiceAccount using labels and returns its name
+func (r *WolConfigReconciler) discoverAgentServiceAccount(ctx context.Context) (string, error) {
+	log := ctrl.LoggerFrom(ctx)
+
+	// Determine namespace to search in
+	namespace := r.OperatorNamespace
+	if namespace == "" {
+		namespace = DefaultOperatorNamespace
+	}
+
+	// List ServiceAccounts with the agent labels
+	saList := &corev1.ServiceAccountList{}
+	err := r.List(ctx, saList,
+		client.InNamespace(namespace),
+		client.MatchingLabels{
+			"app.kubernetes.io/name":      "wol-agent",
+			"app.kubernetes.io/component": "agent",
+		},
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to list service accounts: %w", err)
+	}
+
+	if len(saList.Items) == 0 {
+		log.Info("Agent ServiceAccount not found, using default name", "default", DefaultAgentServiceAccount)
+		return DefaultAgentServiceAccount, nil
+	}
+
+	// Use the first matching ServiceAccount
+	sa := saList.Items[0]
+	log.Info("Discovered agent ServiceAccount", "name", sa.Name, "namespace", sa.Namespace)
+
+	return sa.Name, nil
+}
+
+// discoverOperatorAddress finds the gRPC service using labels and returns its address
+func (r *WolConfigReconciler) discoverOperatorAddress(ctx context.Context) (string, error) {
+	log := ctrl.LoggerFrom(ctx)
+
+	// Determine namespace to search in
+	namespace := r.OperatorNamespace
+	if namespace == "" {
+		namespace = DefaultOperatorNamespace
+	}
+
+	// List services with the gRPC labels
+	serviceList := &corev1.ServiceList{}
+	err := r.List(ctx, serviceList,
+		client.InNamespace(namespace),
+		client.MatchingLabels{
+			"app.kubernetes.io/name":      "kubevirt-wol",
+			"app.kubernetes.io/component": "grpc",
+		},
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to list services: %w", err)
+	}
+
+	if len(serviceList.Items) == 0 {
+		log.Info("gRPC service not found, using default address", "default", DefaultOperatorAddress)
+		return DefaultOperatorAddress, nil
+	}
+
+	// Use the first matching service
+	service := serviceList.Items[0]
+
+	// Find the gRPC port
+	var port int32
+	for _, p := range service.Spec.Ports {
+		if p.Name == "grpc" || p.Port == 9090 {
+			port = p.Port
+			break
+		}
+	}
+	if port == 0 && len(service.Spec.Ports) > 0 {
+		// Fallback to first port if no grpc port found
+		port = service.Spec.Ports[0].Port
+	}
+	if port == 0 {
+		log.Info("No valid port found in gRPC service, using default address", "service", service.Name)
+		return DefaultOperatorAddress, nil
+	}
+
+	// Build address: <service-name>.<namespace>.svc:<port>
+	address := fmt.Sprintf("%s.%s.svc:%d", service.Name, service.Namespace, port)
+	log.Info("Discovered gRPC service", "address", address, "service", service.Name)
+
+	return address, nil
+}
 
 // reconcileAgentDaemonSet creates or updates the agent DaemonSet for the given WolConfig
 func (r *WolConfigReconciler) reconcileAgentDaemonSet(ctx context.Context, wolConfig *wolv1beta1.WolConfig) error {
 	log := ctrl.LoggerFrom(ctx)
 	daemonSetName := getDaemonSetName(wolConfig)
 
+	// Discover operator address dynamically
+	operatorAddress, err := r.discoverOperatorAddress(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to discover operator address: %w", err)
+	}
+
+	// Discover agent ServiceAccount dynamically
+	serviceAccountName, err := r.discoverAgentServiceAccount(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to discover agent service account: %w", err)
+	}
+
 	// Build desired DaemonSet
-	desiredDS := r.buildAgentDaemonSet(wolConfig, daemonSetName)
+	desiredDS := r.buildAgentDaemonSet(wolConfig, daemonSetName, operatorAddress, serviceAccountName)
 
 	// Set owner reference
 	if err := controllerutil.SetControllerReference(wolConfig, desiredDS, r.Scheme); err != nil {
@@ -56,9 +159,13 @@ func (r *WolConfigReconciler) reconcileAgentDaemonSet(ctx context.Context, wolCo
 
 	// Check if DaemonSet already exists
 	existingDS := &appsv1.DaemonSet{}
-	err := r.Get(ctx, types.NamespacedName{
+	namespace := r.OperatorNamespace
+	if namespace == "" {
+		namespace = DefaultOperatorNamespace
+	}
+	err = r.Get(ctx, types.NamespacedName{
 		Name:      daemonSetName,
-		Namespace: AgentNamespace,
+		Namespace: namespace,
 	}, existingDS)
 
 	if err != nil {
@@ -84,7 +191,13 @@ func (r *WolConfigReconciler) reconcileAgentDaemonSet(ctx context.Context, wolCo
 }
 
 // buildAgentDaemonSet constructs the DaemonSet spec for the agent
-func (r *WolConfigReconciler) buildAgentDaemonSet(wolConfig *wolv1beta1.WolConfig, name string) *appsv1.DaemonSet {
+func (r *WolConfigReconciler) buildAgentDaemonSet(wolConfig *wolv1beta1.WolConfig, name string, operatorAddress string, serviceAccountName string) *appsv1.DaemonSet {
+	// Determine namespace
+	namespace := r.OperatorNamespace
+	if namespace == "" {
+		namespace = DefaultOperatorNamespace
+	}
+
 	labels := map[string]string{
 		"app":                          "wol-agent",
 		"app.kubernetes.io/name":       "wol-agent",
@@ -94,8 +207,14 @@ func (r *WolConfigReconciler) buildAgentDaemonSet(wolConfig *wolv1beta1.WolConfi
 		"wol.pillon.org/wolconfig":     wolConfig.Name,
 	}
 
-	// Determine image
+	// Determine image priority:
+	// 1. WolConfig.Spec.Agent.Image (user override)
+	// 2. r.AgentImage (from AGENT_IMAGE env var - same version as manager)
+	// 3. DefaultAgentImage (fallback)
 	image := DefaultAgentImage
+	if r.AgentImage != "" {
+		image = r.AgentImage
+	}
 	if wolConfig.Spec.Agent.Image != "" {
 		image = wolConfig.Spec.Agent.Image
 	}
@@ -122,7 +241,7 @@ func (r *WolConfigReconciler) buildAgentDaemonSet(wolConfig *wolv1beta1.WolConfi
 		ImagePullPolicy: imagePullPolicy,
 		Args: []string{
 			"--node-name=$(NODE_NAME)",
-			"--operator-address=" + DefaultOperatorAddress,
+			"--operator-address=" + operatorAddress,
 			"--ports=" + strings.Join(portsStr, ","),
 			"--zap-log-level=info",
 		},
@@ -136,6 +255,14 @@ func (r *WolConfigReconciler) buildAgentDaemonSet(wolConfig *wolv1beta1.WolConfi
 				},
 			},
 			{
+				Name: "POD_NAMESPACE",
+				ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "metadata.namespace",
+					},
+				},
+			},
+			{
 				Name:  "WOLCONFIG_NAME",
 				Value: wolConfig.Name,
 			},
@@ -144,7 +271,7 @@ func (r *WolConfigReconciler) buildAgentDaemonSet(wolConfig *wolv1beta1.WolConfi
 			RunAsUser:                pointer(int64(0)),
 			AllowPrivilegeEscalation: pointer(false),
 			Capabilities: &corev1.Capabilities{
-				Add:  []corev1.Capability{"NET_BIND_SERVICE"},
+				Add:  []corev1.Capability{"NET_BIND_SERVICE", "NET_RAW"},
 				Drop: []corev1.Capability{"ALL"},
 			},
 		},
@@ -195,7 +322,7 @@ func (r *WolConfigReconciler) buildAgentDaemonSet(wolConfig *wolv1beta1.WolConfi
 	podSpec := corev1.PodSpec{
 		HostNetwork:        true,
 		DNSPolicy:          corev1.DNSClusterFirstWithHostNet,
-		ServiceAccountName: AgentServiceAccountName,
+		ServiceAccountName: serviceAccountName,
 		SecurityContext: &corev1.PodSecurityContext{
 			RunAsUser: pointer(int64(0)),
 		},
@@ -244,7 +371,7 @@ func (r *WolConfigReconciler) buildAgentDaemonSet(wolConfig *wolv1beta1.WolConfi
 	ds := &appsv1.DaemonSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: AgentNamespace,
+			Namespace: namespace,
 			Labels:    labels,
 		},
 		Spec: appsv1.DaemonSetSpec{

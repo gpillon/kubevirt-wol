@@ -1,0 +1,2 @@
+Capire i cluster role bnding, con il deployment
+pod nel project sdfsdfsfsvsdfsdffsf non parte

@@ -1,8 +1,10 @@
-resources:
-- manager.yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
+
+resources:
+- manager.yaml
+
 images:
 - name: controller
   newName: quay.io/kubevirtwol/kubevirt-wol-manager
-  newTag: 20251024-160030
+  newTag: latest

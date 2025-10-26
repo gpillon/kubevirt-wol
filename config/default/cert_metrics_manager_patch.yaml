@@ -1,0 +1,22 @@
+# This patch enables mounting the certificate for metrics server
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller-manager
+  namespace: system
+spec:
+  template:
+    spec:
+      containers:
+      - name: manager
+        args:
+        - "--metrics-cert-path=/tmp/k8s-metrics-server/metrics-certs"
+        volumeMounts:
+        - mountPath: /tmp/k8s-metrics-server/metrics-certs
+          name: metrics-server-cert
+          readOnly: true
+      volumes:
+      - name: metrics-server-cert
+        secret:
+          secretName: metrics-server-cert
+

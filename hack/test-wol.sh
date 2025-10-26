@@ -5,19 +5,20 @@
 
 MAC="${1:-52:54:00:12:34:56}"
 TARGET="${2:-255.255.255.255}"  # broadcast by default
+PORT="${3:-9}"
 
 echo "=========================================="
 echo "Testing Wake-on-LAN"
 echo "=========================================="
 echo "Target MAC: $MAC"
 echo "Target IP:  $TARGET"
-echo "Port:       9 (UDP)"
+echo "Port:       $PORT (UDP)"
 echo ""
 
 # Check if wakeonlan is installed
 if command -v wakeonlan &> /dev/null; then
     echo "Using wakeonlan command..."
-    wakeonlan -i "$TARGET" -p 9 "$MAC"
+    wakeonlan -i "$TARGET" -p $PORT "$MAC"
     echo "✓ WOL packet sent via wakeonlan"
 else
     echo "wakeonlan not found, using Python..."
@@ -38,7 +39,7 @@ data = b'\xff' * 6 + bytes.fromhex(mac) * 16
 # Send as UDP broadcast
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-sock.sendto(data, ('${TARGET}', 9))
+sock.sendto(data, ('${TARGET}', $PORT))
 sock.close()
 
 print(f"✓ WOL magic packet sent to ${TARGET}:9")

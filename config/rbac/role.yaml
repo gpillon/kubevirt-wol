@@ -8,6 +8,8 @@ rules:
   - ""
   resources:
   - namespaces
+  - serviceaccounts
+  - services
   verbs:
   - get
   - list
